@@ -1,24 +1,21 @@
-# Poly‑LLM Hub research workspace
+# Poly-LLM Hub research workspace
 
-This folder keeps source-backed project research, model briefs, and the empirical study plan together. The working copy is in your Documents folder at C:\Users\arhaa\Documents\ChatGPT\AI UI.
+This folder keeps provider-integration research and the reusable model/service briefing template alongside the app. The snapshot date for the current research notes is 2026-11-14 (Asia/Calcutta).
 
 ## Files
 
-- ../docs/PROJECT_LOG.md — dated record of project activity, decisions, and next steps.
-- model-analysis-template.md — reusable version of your model/service analysis prompt.
-- integration-landscape.md — provider clients, APIs, local runtimes, and integration implications.
-- model-profiles.md — first dated profiles for representative API-accessible models.
-- empirical-study-plan.md — benchmark and data-capture design.
-- ../data/benchmark_prompts_v1.jsonl — original project-authored prompt set for future runs.
-- local-client-inventory.md — commands discoverable on this Windows PATH at the time checked.
+- `integration-landscape.md` — provider APIs, local inference servers, coding-agent CLIs, and architecture implications.
+- `local-client-inventory.md` — executables observed on the Windows PATH during the initial project survey; this is a dated snapshot, not a current machine scan.
+- `model-analysis-template.md` — reusable template for researching an individual AI model/service.
+- `../prompts/parallel-research-prompts.md` — three coordinated prompt briefs for gathering project research.
+- `../docs/PROJECT_LOG.md` — consolidated dated record of project activity and preserved predecessor logs.
+- `../docs/SECURITY_REVIEW.md` — security boundaries and manual review points for this implementation.
+
+The app's built-in starter prompt examples are in `web/index.html`. Users can save editable prompt sets to their local catalog and optionally collect comparison history; no provider benchmark responses are included in this source folder.
 
 ## Research handling
 
-- Snapshot date: 2026-11-14 (Asia/Calcutta).
-- Provider features, prices, model IDs, terms, and rate limits change. Each profile links to official sources and states its snapshot date.
-- “Not publicly disclosed” means it was not stated in the official materials reviewed for that profile.
-- No provider model calls have been made for this research snapshot. No prompts, responses, API keys, or credentials have been collected.
-- The prompt corpus is original project material. Benchmark results from providers are kept distinct from results measured by this project.
-- Keep API keys and private run outputs out of Git. Do not put credentials into the project log.
-
-
+- Provider features, prices, model IDs, terms, and quotas can change. Recheck official sources and record a checked date before relying on them.
+- “Not publicly disclosed” means the official materials reviewed did not state the information.
+- No live provider model calls or benchmark responses are included in this source copy.
+- Keep API keys and private run outputs out of Git. Local comparison history is a separate, opt-in file in the user's application-data folder.
