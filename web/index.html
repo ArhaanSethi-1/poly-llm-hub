@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Poly-LLM Hub</title>
+  <style>
+    :root {
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #e9edf7;
+      background: #0b0e14;
+      font-synthesis: none;
+      --panel: #121722;
+      --panel2: #171e2b;
+      --line: #293243;
+      --muted: #97a2b5;
+      --accent: #a78bfa;
+      --green: #72d6a0;
+      --red: #ff8b8b;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; }
+    button, input, textarea { font: inherit; }
+    .shell { max-width: 1140px; padding: 32px 22px 48px; margin: 0 auto; }
+    header { display: flex; justify-content: space-between; align-items: center; gap: 18px; margin-bottom: 30px; }
+    .brand { display: flex; align-items: center; gap: 13px; }
+    .mark { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 14px; background: linear-gradient(140deg,#a78bfa,#7162d9); color: #111321; font-weight: 900; letter-spacing: -2px; }
+    h1 { margin: 0; font-size: 19px; letter-spacing: -.4px; }
+    .subtitle { margin-top: 4px; color: var(--muted); font-size: 13px; }
+    .local-pill { color: var(--green); border: 1px solid #2b6045; background: #10251b; border-radius: 999px; padding: 7px 11px; font-size: 12px; white-space: nowrap; }
+    .intro { margin-bottom: 20px; }
+    .intro h2 { margin: 0 0 8px; font-size: clamp(24px,4vw,34px); letter-spacing: -1.1px; }
+    .intro p { margin: 0; color: var(--muted); max-width: 760px; line-height: 1.6; }
+    .layout { display: grid; grid-template-columns: 340px minmax(0,1fr); gap: 18px; align-items: start; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; }
+    .providers { padding: 17px; }
+    .panel-head { display: flex; align-items: center; justify-content: space-between; margin: 0 0 12px; }
+    .panel-head h3 { margin: 0; font-size: 14px; }
+    .small { color: var(--muted); font-size: 11px; }
+    .provider-list { display: grid; gap: 9px; }
+    .provider { border: 1px solid var(--line); background: #10151e; border-radius: 12px; padding: 11px; }
+    .provider-top { display: flex; align-items: center; gap: 9px; }
+    .provider-top input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; }
+    .provider-name { flex: 1; font-size: 13px; font-weight: 650; }
+    .badge { font-size: 10px; border-radius: 999px; padding: 4px 7px; color: #c4b5fd; background: #292344; }
+    .badge.off { color: #f0bd79; background: #34291d; }
+    .provider-note { color: var(--muted); font-size: 11px; line-height: 1.4; margin: 8px 0; }
+    .provider input[type=text] { width: 100%; color: #edf0f8; background: #0b0e14; border: 1px solid #303a4c; border-radius: 8px; outline: none; padding: 9px 10px; font-size: 12px; }
+    .provider input[type=text]:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px #a78bfa22; }
+    .compose { padding: 18px; }
+    label.field-label { display: block; color: #c4cada; font-size: 12px; font-weight: 650; margin: 2px 0 8px; }
+    textarea { display: block; width: 100%; min-height: 215px; resize: vertical; border: 1px solid #303a4c; outline: none; border-radius: 12px; background: #0b0e14; color: #f0f2f8; padding: 14px; line-height: 1.55; }
+    .compose-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
+    .privacy { color: var(--muted); font-size: 11px; line-height: 1.4; }
+    .primary { border: 0; border-radius: 10px; background: #a78bfa; color: #171322; font-weight: 750; padding: 11px 16px; cursor: pointer; }
+    .primary:hover { background: #b6a1ff; }
+    .primary:disabled { opacity: .55; cursor: wait; }
+    .notice { display: none; border: 1px solid #51432e; background: #211b13; border-radius: 10px; padding: 11px 13px; margin-top: 13px; color: #f4d7a8; font-size: 12px; line-height: 1.5; }
+    .notice.show { display: block; }
+    .results { margin-top: 18px; }
+    .results-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .results-head h3 { margin: 0; font-size: 14px; }
+    .result-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(290px,1fr)); gap: 12px; }
+    .result { overflow: hidden; }
+    .result-head { padding: 12px 14px; background: var(--panel2); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    .result-title { font-size: 12px; font-weight: 700; }
+    .latency { color: var(--muted); font-size: 10px; white-space: nowrap; }
+    .result-body { padding: 14px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; font-size: 13px; max-height: 540px; overflow: auto; }
+    .result-body.error { color: var(--red); }
+    .empty { color: var(--muted); font-size: 12px; padding: 25px; text-align: center; border: 1px dashed #303a4c; border-radius: 12px; }
+    details { margin-top: 14px; color: var(--muted); font-size: 11px; }
+    details summary { cursor: pointer; }
+    .keys { margin-top: 8px; background: #0b0e14; padding: 11px; border-radius: 8px; line-height: 1.7; }
+    code { color: #c4b5fd; }
+    @media (max-width: 800px) { .layout { grid-template-columns: 1fr; } header { align-items: flex-start; } }
+    @media (max-width: 480px) { .shell { padding: 20px 14px 34px; } .local-pill { font-size: 10px; } .compose-foot { align-items: flex-start; flex-direction: column; } .primary { width: 100%; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div class="brand">
+        <div class="mark">P</div>
+        <div><h1>Poly-LLM Hub</h1><div class="subtitle">One prompt. Several models. Side-by-side.</div></div>
+      </div>
+      <div class="local-pill">● Local interface</div>
+    </header>
+
+    <section class="intro">
+      <h2>Compare model responses</h2>
+      <p>Select providers, enter their model IDs, and send the same prompt to each. Cloud providers use API keys from your environment; Ollama runs through its local server.</p>
+    </section>
+
+    <div class="layout">
+      <section class="panel providers">
+        <div class="panel-head"><h3>Providers</h3><span class="small" id="selection-count">0 selected</span></div>
+        <div class="provider-list" id="provider-list"><div class="empty">Checking available providers…</div></div>
+        <details>
+          <summary>Set cloud API keys on Windows</summary>
+          <div class="keys">In PowerShell, set the key in the same window before starting the app:<br>
+            <code>$env:OPENAI_API_KEY = "your-key"</code><br>
+            Restart the app after setting it. Never paste keys into this page or commit them to Git.
+          </div>
+        </details>
+      </section>
+
+      <section class="panel compose">
+        <label class="field-label" for="prompt">Your prompt</label>
+        <textarea id="prompt" maxlength="20000" placeholder="Write a prompt to compare…"></textarea>
+        <div class="compose-foot">
+          <div class="privacy">Prompts are sent only when you press Compare.<br>The app does not save prompts or responses.</div>
+          <button class="primary" id="compare">Compare selected</button>
+        </div>
+        <div class="notice" id="notice" role="status"></div>
+      </section>
+    </div>
+
+    <section class="results">
+      <div class="results-head"><h3>Responses</h3><span class="small" id="run-status"></span></div>
+      <div class="result-grid" id="results"><div class="empty">Your model responses will appear here.</div></div>
+    </section>
+  </main>
+  <script>
+    const providerList = document.getElementById("provider-list");
+    const resultGrid = document.getElementById("results");
+    const notice = document.getElementById("notice");
+    const compareButton = document.getElementById("compare");
+    const selectionCount = document.getElementById("selection-count");
+    const runStatus = document.getElementById("run-status");
+    const chosen = new Set();
+
+    function updateCount() {
+      selectionCount.textContent = chosen.size + " selected";
+    }
+
+    function addProvider(provider) {
+      const card = document.createElement("div");
+      card.className = "provider";
+      const top = document.createElement("div");
+      top.className = "provider-top";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.setAttribute("aria-label", "Select " + provider.label);
+      checkbox.addEventListener("change", function () {
+        if (checkbox.checked && chosen.size >= 5) {
+          checkbox.checked = false;
+          showNotice("You can compare up to five providers at a time.");
+          return;
+        }
+        if (checkbox.checked) chosen.add(provider.id);
+        else chosen.delete(provider.id);
+        updateCount();
+      });
+      const name = document.createElement("span");
+      name.className = "provider-name";
+      name.textContent = provider.label;
+      const badge = document.createElement("span");
+      badge.className = "badge" + (provider.available ? "" : " off");
+      if (provider.kind === "cloud") {
+        badge.textContent = provider.key_present ? "key set" : "key missing";
+      } else {
+        badge.textContent = provider.available ? "server online" : "server offline";
+      }
+      top.append(checkbox, name, badge);
+
+      const note = document.createElement("div");
+      note.className = "provider-note";
+      note.textContent = provider.help;
+      if (provider.kind === "cloud" && !provider.key_present) {
+        note.textContent += " Missing " + provider.key_env + ".";
+      }
+      if (provider.id === "ollama" && !provider.available) {
+        note.textContent += " Start Ollama and install a model to use it.";
+      }
+
+      const model = document.createElement("input");
+      model.type = "text";
+      model.autocomplete = "off";
+      model.spellcheck = false;
+      model.placeholder = provider.placeholder;
+      model.setAttribute("aria-label", provider.label + " model ID");
+      model.dataset.provider = provider.id;
+      if (provider.id === "ollama" && window.ollamaModels.length) {
+        const listId = "ollama-models";
+        model.setAttribute("list", listId);
+        const list = document.createElement("datalist");
+        list.id = listId;
+        window.ollamaModels.forEach(function (item) {
+          const option = document.createElement("option");
+          option.value = item;
+          list.append(option);
+        });
+        card.append(top, note, model, list);
+      } else {
+        card.append(top, note, model);
+      }
+      providerList.append(card);
+    }
+
+    function showNotice(message) {
+      notice.textContent = message;
+      notice.classList.add("show");
+    }
+
+    function clearNotice() {
+      notice.textContent = "";
+      notice.classList.remove("show");
+    }
+
+    function renderResult(item) {
+      const card = document.createElement("article");
+      card.className = "panel result";
+      const head = document.createElement("div");
+      head.className = "result-head";
+      const title = document.createElement("div");
+      title.className = "result-title";
+      title.textContent = item.provider + " · " + item.model;
+      const latency = document.createElement("div");
+      latency.className = "latency";
+      latency.textContent = item.latency_ms + " ms";
+      head.append(title, latency);
+      const body = document.createElement("div");
+      body.className = "result-body" + (item.ok ? "" : " error");
+      body.textContent = item.ok ? item.text : item.error;
+      card.append(head, body);
+      if (item.ok && item.usage) {
+        const usageParts = [];
+        if (Number.isFinite(item.usage.input_tokens)) usageParts.push("Input " + item.usage.input_tokens);
+        if (Number.isFinite(item.usage.output_tokens)) usageParts.push("Output " + item.usage.output_tokens);
+        if (usageParts.length) {
+          const meta = document.createElement("div");
+          meta.className = "latency";
+          meta.style.padding = "0 14px 12px";
+          meta.textContent = usageParts.join(" tokens · ");
+          card.append(meta);
+        }
+      }
+      return card;
+    }
+
+    async function loadStatus() {
+      try {
+        const response = await fetch("/api/status", { cache: "no-store" });
+        const data = await response.json();
+        window.ollamaModels = data.ollama_models || [];
+        providerList.replaceChildren();
+        data.providers.forEach(addProvider);
+        runStatus.textContent = Object.keys(data.cli_detection || {}).filter(function (key) {
+          return data.cli_detection[key];
+        }).length + " CLI tools detected";
+      } catch (error) {
+        providerList.innerHTML = "";
+        const message = document.createElement("div");
+        message.className = "empty";
+        message.textContent = "Could not load provider status. Refresh this page.";
+        providerList.append(message);
+      }
+    }
+
+    compareButton.addEventListener("click", async function () {
+      clearNotice();
+      const prompt = document.getElementById("prompt").value;
+      if (!prompt.trim()) {
+        showNotice("Enter a prompt first.");
+        return;
+      }
+      if (!chosen.size) {
+        showNotice("Select at least one provider.");
+        return;
+      }
+      const models = [];
+      for (const id of chosen) {
+        const input = document.querySelector('input[data-provider="' + id + '"]');
+        if (!input || !input.value.trim()) {
+          showNotice("Enter a model ID for each selected provider.");
+          return;
+        }
+        models.push({ provider: id, model: input.value.trim() });
+      }
+      compareButton.disabled = true;
+      compareButton.textContent = "Comparing…";
+      runStatus.textContent = "Waiting for providers";
+      resultGrid.replaceChildren();
+      const loading = document.createElement("div");
+      loading.className = "empty";
+      loading.textContent = "Sending the same prompt to " + models.length + " provider(s)…";
+      resultGrid.append(loading);
+      try {
+        const response = await fetch("/api/compare", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: prompt, models: models })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Request failed.");
+        resultGrid.replaceChildren();
+        data.results.forEach(function (item) { resultGrid.append(renderResult(item)); });
+        const successful = data.results.filter(function (item) { return item.ok; }).length;
+        runStatus.textContent = successful + " of " + data.results.length + " responses received";
+      } catch (error) {
+        resultGrid.replaceChildren();
+        const message = document.createElement("div");
+        message.className = "empty";
+        message.textContent = error.message || "Request failed. Check the app and try again.";
+        resultGrid.append(message);
+        runStatus.textContent = "Request failed";
+      } finally {
+        compareButton.disabled = false;
+        compareButton.textContent = "Compare selected";
+      }
+    });
+
+    window.ollamaModels = [];
+    loadStatus();
+  </script>
+</body>
+</html>
