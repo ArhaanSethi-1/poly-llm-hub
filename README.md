@@ -17,7 +17,9 @@ This iteration provides:
 - Side-by-side comparisons of up to five catalog entries, with up to three active comparisons and three provider calls per comparison.
 - A single-model chat workspace that carries recent user/assistant turns across supported provider protocols. It offers lean, balanced, and full-context choices; changing the active model makes no provider call, and a failed turn is resent only after explicit user action. Chat context lives in the browser session unless opt-in local history is enabled.
 - An optional shared output-token cap, translated by the provider adapter and stored with each saved result.
-- Cancellation, preferred-answer marking, explicit bounded retries for failed model calls, categorized prompt sets, sequential prompt-set runs, prompt-level cross-run summaries, 1–5 user ratings, and opt-in local run history.
+- Cancellation, preferred-answer marking, explicit bounded retries for failed model calls, compare-only exponential retries for HTTP 429 throttles, categorized prompt sets, sequential prompt-set runs, prompt-level cross-run summaries, 1–5 user ratings, and opt-in local run history.
+- Optional AES-GCM encryption for local JSONL history using a random key stored in the same OS credential vault as provider keys; history exports remain decrypted and readable.
+- Opt-in Direct Connection for Anthropic Chat and model discovery when the provider account permits browser CORS; its key stays in browser localStorage. Compare remains on Local Proxy.
 - Temporary summary filters for minimum success rate, maximum average latency, and maximum average estimated cost; missing metrics are excluded only when their filter is active.
 - User-initiated JSONL and CSV exports of saved history.
 - CSV export prefixes risky spreadsheet-formula text so prompt/response fields are less likely to execute as formulas when opened in spreadsheet software.
@@ -37,7 +39,7 @@ These adapters were verified against local mock servers only. No live provider c
 
 ## Run locally
 
-Requirements: Python 3.10 or later. The app uses only the Python standard library.
+Requirements: Python 3.10 or later. The app uses the Python standard library for its base features. Optional history encryption uses `cryptography`; install it with `python -m pip install -r requirements-history-encryption.txt`.
 
 1. Open PowerShell in the repository folder.
 2. Start the server:
@@ -64,7 +66,7 @@ Windows PowerShell fallback examples:
     $env:XAI_API_KEY = "your-key"
     $env:DEEPSEEK_API_KEY = "your-key"
 
-Set a key in the same shell before starting the app. Linux systems without `secret-tool` or an available desktop keyring can use environment variables. Do not paste API keys into the browser or save them in project files.
+Set a key in the same shell before starting the app. On Linux, key saving is enabled only when `secret-tool` and a responsive desktop Secret Service keyring are available. Otherwise, the app displays a one-time warning and disables OS-vault key saving; environment-variable fallback remains available. No plaintext key fallback is used. Do not put API keys in project files.
 
 Each cloud API needs its own provider account and credential. Google sign-in does not connect OpenAI, Anthropic, xAI, or DeepSeek. Gemini uses a Google AI Studio API key in this build; Google OAuth and a shared Poly-LLM Hub account are not configured. Ollama is local and usually needs no cloud key.
 
@@ -94,7 +96,7 @@ For repeatable records, explicitly enable **local history** in the UI. It is off
 
     %APPDATA%\Poly-LLM-Hub\history.jsonl
 
-The UI can export the saved records as JSONL or CSV, or clear all history. The history file is not encrypted. Catalog updates use an atomic file replacement; history appends are flushed to disk. If a crash leaves an invalid, incomplete final JSONL line, the app keeps the source file unchanged, excludes that tail from reads/exports, warns in the UI, and blocks further appends so records cannot be concatenated onto the damaged tail. Export the readable records, clear history, then enable history again to resume saving. A failed history write leaves the response available in the current run and shows a recovery message rather than silently discarding it. Clearing history also turns off future saves. Turning the setting off stops future saves but leaves existing records until you clear them. History files contain prompts and responses, so handle and back them up accordingly. Exports use an explicit field allow-list and never include credential values or environment-variable names.
+The UI can export the saved records as JSONL or CSV, or clear all history. History is readable JSONL by default; optional AES-GCM encryption is available when the optional package and OS credential store are installed. Catalog updates use an atomic file replacement; history appends are flushed to disk. If a crash leaves an invalid, incomplete final JSONL line, the app keeps the source file unchanged, excludes that tail from reads/exports, warns in the UI, and blocks further appends so records cannot be concatenated onto the damaged tail. Export the readable records, clear history, then enable history again to resume saving. A failed history write leaves the response available in the current run and shows a recovery message rather than silently discarding it. Clearing history also turns off future saves. Turning the setting off stops future saves but leaves existing records until you clear them. History files contain prompts and responses, so handle and back them up accordingly. Exports use an explicit field allow-list and never include credential values or environment-variable names.
 
 The saved-history summary groups records by model and shows run success, preferred-answer selections out of comparisons where a choice was recorded, average reported latency, average time to first token for streaming runs, token totals, average user rating with the number of rated runs, and the sum of available cost estimates. A success-rate chart shows the saved-run sample count and is not a composite model score. A daily trend chart can show all models together, one selected model, or a prompt category; it plots the latest 30 active UTC dates in the saved-history year with success rate and result count. Category counts are model results, so one prompt can contribute multiple results. A second table compares saved prompt-set runs by prompt and model, with run success, recorded preferred picks, latency, rating, output-token samples, and estimated-cost totals; it does not return saved prompt text. A “no saved choice” or “unknown cost” remains distinct from zero; local runs are labeled as not estimated. Cost totals include only runs with a supported estimate and are not provider invoices.
 
@@ -105,12 +107,22 @@ Chat is the primary workspace and sends each turn to exactly one active catalog 
 When a comparison starts, the app sends the same prompt to each selected model through its configured connection. Streaming is enabled by default, so text appears in each result card as it arrives; turn it off in Shared run settings for compatible endpoints that do not support streaming. The page shows each provider/model, destination, status, duration, time to first token when measured, token usage where reported, and errors.
 
 - With history off, prompts and results remain in process memory only. Settled run records, including retry context, expire after 30 minutes and may be evicted sooner when the run cache reaches its size limit. Active runs and cancelled runs with provider calls still pending remain tracked until those calls settle. The prompt is not returned by the run API or written to disk unless history is enabled.
-- Browser localStorage contains selected model entry IDs only. Prompts, responses, prompt-set text, and credentials are not stored there.
+- Browser localStorage contains selected model entry IDs. In the explicitly enabled Anthropic Direct Connection mode only, the user-provided Anthropic key is also stored in browser localStorage; prompts and responses are not saved there by that mode. Local Proxy credentials stay in the OS vault.
 - The app does not log request bodies, prompts, responses, or credential values.
 - Provider API redirects are limited to the configured origin; endpoints that require a cross-origin redirect must be configured using their final API URL.
 - Saved OS credentials are read only by the local Python process when a provider request or connection check runs. Removing a saved key removes the local vault entry; it does not revoke the provider's key.
 - A remote request sends the prompt to the configured service under that service’s terms and may incur a charge. A local destination sends it to the configured local or loopback server.
-- Cancel stops this app from waiting for and accepting late results. The current urllib transport cannot reliably interrupt a request already sent upstream. The provider may continue generation and billing after local cancellation.
+- Cancel marks the run cancelled locally, ignores late results, and closes any tracked upstream HTTP response. That is a best-effort transport disconnect, not a provider cancellation guarantee. The configured adapters use OpenAI Chat Completions, Anthropic Messages, Gemini generateContent, xAI/DeepSeek OpenAI-compatible chat, or Ollama chat; none of those adapters uses a documented provider-side cancellation endpoint. OpenAI documents `/v1/responses/{id}/cancel` only for Responses created with `background=true`, which this app does not use. Provider-side generation and billing after disconnect are therefore undocumented and must be treated as possible for every remote provider. Ollama may stop work after disconnect depending on its server/runtime, but this app does not verify that. Live billing behavior has not been tested.
+
+Cancellation behavior by adapter:
+
+| Provider/route used here | What Cancel does | Provider-side stop or billing guarantee in this app |
+| --- | --- | --- |
+| OpenAI Chat Completions | Closes the HTTP response and drops late output. | No cancellation endpoint is sent. OpenAI's Responses cancellation API applies only to background Responses, which this adapter does not use; generation/billing after disconnect is not verified. [OpenAI cancellation API](https://developers.openai.com/api/reference/resources/responses/methods/cancel) |
+| Anthropic Messages | Closes the HTTP response and drops late output. | No separate provider-side cancellation request is sent; generation/billing after disconnect is not verified. |
+| Gemini generateContent | Closes the HTTP response and drops late output. | No provider-side cancellation request is sent; generation/billing after disconnect is not verified. |
+| xAI and DeepSeek OpenAI-compatible chat | Closes the HTTP response and drops late output. | No provider-side cancellation request is sent; generation/billing after disconnect is not verified. |
+| Ollama `/api/chat` | Closes the local HTTP response and drops late output. | Runtime cancellation after disconnect is server/version dependent and not verified by this app; there is no cloud API charge from the local endpoint, but compute may continue. |
 - Marking a preferred answer updates the in-memory run record and does not call another model. When local history is enabled for that run, the choice is appended as a separate event and included in saved-history summaries.
 - A failed model can be retried only by user action, up to two times per retry chain. Only one retry for a failed result can run at a time; another retry is available after it settles. Each retry sends a new provider request and may incur another charge. Retries honor the current history setting and are blocked if the model or endpoint configuration changed. Response synthesis, automatic routing, agent CLI execution, and provider policy/license engine are not implemented.
 
@@ -120,7 +132,35 @@ An estimate uses:
 
     (input tokens × input USD per million + output tokens × output USD per million) ÷ 1,000,000
 
-The page labels cost “unknown” if exact-model rates or either token count is missing or invalid. Local runs show “Not estimated for local run.” Each estimate links to the manually entered source and checked date. Prices older than 90 days are marked stale in result cards and counted separately in history summaries; the estimate is still shown with that warning. Future checked dates are rejected. Provider discounts, cached tokens, tiers, taxes, and final billing adjustments may differ from this estimate. The app does not fetch or refresh prices automatically.
+The page labels cost “unknown” if exact-model rates or either token count is missing or invalid. Local runs show “Not estimated for local run.” Each estimate links to its source and checked date. Prices older than 90 days are marked stale in result cards and counted separately in history summaries; a visible prompt offers a manual refresh from the bundled `catalog/pricing_table.json` snapshot. Refreshing never calls provider APIs and keeps custom prices from a different source unchanged. Provider discounts, cached tokens, tiers, taxes, and final billing adjustments may differ from this estimate.
+
+## History encryption and Direct Connection
+
+History encryption is optional and requires `cryptography` plus a working OS credential store. Enable it beside the history toggle in Settings. The app asks for confirmation before migrating all existing rows; migration is atomic. The encryption key is created once and stored in the same Windows Credential Manager, Linux Secret Service, or macOS Keychain used for connection keys. The browser never receives it. History is decrypted only by the local backend for display and JSONL/CSV export. Back up the OS credential store together with the encrypted history file; losing the vault key makes that file unreadable. Disabling encryption also asks for confirmation and migrates rows back to readable JSONL.
+
+Direct Connection is currently supported only for the built-in Anthropic Messages connection and only for one-model Chat plus browser-side model discovery. Anthropic requires `anthropic-dangerous-direct-browser-access: true` and documents that organizations using Zero Data Retention, Compliance API, or certain organization settings cannot call from a browser. A valid key may still receive a CORS-related 401. On a detected browser CORS failure, the UI explains the organization-policy limitation and offers an explicit switch to Local Proxy. The Direct key is stored in this browser's `localStorage`, where users and scripts running in this browser profile can access it; it is less protected than an OS keyring. Direct calls bypass Python and local history. Switch back to Local Proxy for Compare and OS-vault key protection. [Anthropic browser authentication guidance](https://platform.claude.com/docs/en/manage-claude/authentication)
+
+| Provider | Direct mode in this app | Reason |
+| --- | --- | --- |
+| Anthropic Messages | Available, with account restrictions | Anthropic documents a browser opt-in header and explicitly documents organization-level CORS rejection cases. |
+| OpenAI, Gemini, xAI, DeepSeek, Ollama | Disabled | Direct browser CORS/auth behavior is not verified and supported by this app's allowlist; these use Local Proxy. This is an implementation support statement, not a claim that every provider universally blocks browser requests. |
+
+## Opt-in live smoke checks
+
+The normal unittest suite and CI use local mocks only. To intentionally send one short prompt to each remote connection with a key in the OS vault, run:
+
+    python tests/live_smoke_test.py --confirm-costs
+
+This sends real provider requests and may incur charges. Use `--connection CONNECTION_ID` to limit it to one provider. Add `--include-local` only when you also want to probe configured local Ollama connections. Direct browser keys are not read by this script. It prints only a pass/fail summary and sanitized error, never response text or credentials. This script is separate from unittest discovery and CI.
+
+## Standalone builds
+
+Build on the target OS; PyInstaller does not cross-compile. On Windows, run on Windows; on macOS, run on macOS:
+
+    python -m pip install -r requirements-build.txt
+    python scripts/build_standalone.py
+
+The resulting one-file executable is in `dist/`. Windows SmartScreen or antivirus may warn because this project does not code-sign the executable. The Windows build was launched and checked against the local UI and seeded catalog; macOS has not been built or verified here. macOS code signing, notarization, auto-updates, and a macOS build artifact are outside this pass. The standalone executable still binds only to 127.0.0.1.
 
 ## Coding-agent CLIs
 
@@ -132,10 +172,10 @@ The dynamic connection/model catalog in `hub_core.py` is the source of truth for
 
 ## Tests
 
-The repository includes Python unittest cases with temporary loopback mock servers; they do not call live providers or require real API credentials. The suite covers JSON and streaming response bounds, discovery pagination/metadata, provider adapters and multi-turn chat role mapping, local API origin checks, a hash-restricted script CSP, credential non-disclosure across catalog and export routes, seed-catalog initialization and preservation, bounded per-run parallelism, streamed cancellation races, history event folding/exports, run retention, mocked Windows/Linux/macOS credential-store round trips, and source-archive determinism and secret/path rejection. Mocked vault tests do not replace manual platform review. The GitHub Actions workflow is configured to run the suite, Python compilation, browser-script syntax/runtime checks, and source-archive build on Ubuntu and Windows with Python 3.10 and 3.12; a hosted workflow run is still needed before claiming CI is green. The integrated Windows credential UI and Linux/macOS vault flows still need manual platform review.
+The repository includes Python unittest cases with temporary loopback mock servers; they do not call live providers or require real API credentials. The suite covers JSON/streaming bounds, discovery pagination/metadata, provider adapters and chat role mapping, local API origin checks and CSP, credential non-disclosure, catalog seeding, pricing refresh, Direct-mode backend rejection, 429-only backoff, response-close cancellation, history events/exports, run retention, mocked OS vaults, and archive safety. Three AES-GCM tests run when the optional `cryptography` package is installed; otherwise they skip. The current Windows verification installed that dependency and ran all 53 tests. Mocked vault tests do not replace manual platform review. CI runs the unittest suite, Python compilation, browser-script syntax/runtime checks, and source-archive build on Ubuntu and Windows with Python 3.10 and 3.12. A hosted workflow run and manual Windows/Linux/macOS vault and browser review are still needed before claiming cross-platform release readiness.
 
     python -m unittest discover -s tests -v
 
 ## Current limits
 
-The adapters send one user message using basic protocol request shapes and support optional per-comparison output caps. Streaming is available for OpenAI-compatible, Anthropic Messages, Gemini, and Ollama chat endpoints. Temperature, other provider-specific generation parameters, images, tool use, provider-side cancellation, direct browser calls, and all non-chat endpoints are not implemented. Direct browser calls remain off because provider CORS behavior and browser key exposure are not consistently guaranteed by provider documentation. A provider’s model list may include IDs that the account cannot use or that do not support the chosen endpoint. Always verify access, exact IDs, model terms, and billing with the provider before relying on a live connection.
+The adapters send one user message using basic protocol request shapes and support optional per-comparison output caps. Streaming is available for OpenAI-compatible, Anthropic Messages, Gemini, and Ollama chat endpoints. Temperature, other provider-specific generation parameters, images, tool use, provider-side cancellation endpoints, and all non-chat endpoints are not implemented. Direct browser calls are limited to Anthropic Chat and browser-side model discovery; organization-level CORS restrictions may prevent them. A provider’s model list may include IDs that the account cannot use or that do not support the chosen endpoint. Always verify access, exact IDs, model terms, and billing with the provider before relying on a live connection.

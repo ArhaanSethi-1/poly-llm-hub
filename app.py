@@ -26,10 +26,9 @@ import hub_core as core
 from secret_store import (
     SecretStoreUnavailable,
     delete_secret,
-    is_supported as secret_store_supported,
     read_secret,
     save_secret,
-    store_name as credential_store_name,
+    availability as credential_store_availability,
 )
 
 
@@ -45,12 +44,45 @@ MAX_MODELS_PER_RUN = 5
 MAX_ACTIVE_RUNS = 3
 MAX_PARALLEL_MODELS = 3
 MAX_EXPLICIT_RETRIES = 2
+MAX_RATE_LIMIT_RETRIES = 2
+MAX_RATE_LIMIT_BACKOFF_SECONDS = 30
 RUN_TTL_SECONDS = 30 * 60
 CLI_NAMES = {"codex": "codex", "claude": "claude", "gemini": "gemini", "antigravity": "agy", "ollama": "ollama"}
 RUNS: dict[str, dict[str, Any]] = {}
 RUN_LOCK = threading.RLock()
 _CREDENTIAL_DIALOG_LOCK = threading.Lock()
 _CREDENTIAL_DIALOGS: dict[str, subprocess.Popen[Any]] = {}
+_CREDENTIAL_STORE_STATUS: dict[str, Any] | None = None
+_UPSTREAM_LOCK = threading.RLock()
+_UPSTREAM_RESPONSES: dict[tuple[str, str], Any] = {}
+
+
+def credential_store_status(refresh: bool = False) -> dict[str, Any]:
+    global _CREDENTIAL_STORE_STATUS
+    if refresh or _CREDENTIAL_STORE_STATUS is None:
+        _CREDENTIAL_STORE_STATUS = dict(credential_store_availability())
+    return dict(_CREDENTIAL_STORE_STATUS)
+
+
+def _register_upstream_response(
+    run_id: str, model_entry_id: str, cancel_event: threading.Event, response: Any | None,
+) -> None:
+    key = (run_id, model_entry_id)
+    if response is None:
+        with _UPSTREAM_LOCK:
+            _UPSTREAM_RESPONSES.pop(key, None)
+        return
+    with _UPSTREAM_LOCK:
+        if cancel_event.is_set():
+            close_now = True
+        else:
+            _UPSTREAM_RESPONSES[key] = response
+            close_now = False
+    if close_now:
+        try:
+            response.close()
+        except Exception:
+            pass
 
 
 def _inline_script_hash() -> str:
@@ -173,8 +205,9 @@ def active_credential_dialogs() -> dict[str, bool]:
 def open_credential_dialog(connection_id: str, connection_name: str) -> None:
     if not core.ID_RE.fullmatch(connection_id):
         raise ValueError("Invalid provider connection ID.")
-    if not secret_store_supported():
-        raise SecretStoreUnavailable("Secure key entry is unavailable on this system. Use an environment-variable fallback.")
+    store_status = credential_store_status()
+    if not store_status.get("available"):
+        raise SecretStoreUnavailable(str(store_status.get("message") or "Secure key entry is unavailable on this system."))
     try:
         import tkinter  # noqa: F401
     except ImportError as exc:
@@ -311,6 +344,30 @@ def _persist_result(run_id: str, prompt: str, connection: dict[str, Any], model:
     except Exception:
         return None, "Local history could not be saved. Check the history file and available disk space."
 
+
+def _call_model_with_rate_limit_backoff(
+    connection: dict[str, Any], model: dict[str, Any], prompt: str, parameters: dict[str, Any],
+    cancel_event: threading.Event, run_kind: str, messages: list[dict[str, str]] | None = None,
+    on_delta=None, on_response=None,
+) -> dict[str, Any]:
+    retries = 0
+    while True:
+        call_options = {"on_delta": on_delta, "messages": messages}
+        if on_response is not None:
+            call_options["on_response"] = on_response
+        result = core.call_model(connection, model, prompt, parameters, **call_options)
+        if result.get("ok") or result.get("http_status") != 429 or run_kind == "chat" or retries >= MAX_RATE_LIMIT_RETRIES:
+            result["rate_limit_retries"] = retries
+            return result
+        requested_delay = result.get("retry_after_seconds")
+        delay = requested_delay if isinstance(requested_delay, (int, float)) and not isinstance(requested_delay, bool) else 2 ** retries
+        delay = min(MAX_RATE_LIMIT_BACKOFF_SECONDS, max(0.0, float(delay)))
+        if cancel_event.wait(delay):
+            result["rate_limit_retries"] = retries
+            result["error"] = "Cancelled while waiting to retry a rate-limited request."
+            return result
+        retries += 1
+
 def _run_worker(run_id: str, prompt: str, selections: list[tuple[dict[str, Any], dict[str, Any]]],
                 parameters: dict[str, Any], messages: list[dict[str, str]] | None = None) -> None:
     with RUN_LOCK:
@@ -318,6 +375,7 @@ def _run_worker(run_id: str, prompt: str, selections: list[tuple[dict[str, Any],
         if not run:
             return
         cancel_event = run["cancel_event"]
+        run_kind = run.get("run_kind", "comparison")
     pool = ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_MODELS, max(1, len(selections))))
     futures = {}
     try:
@@ -334,18 +392,16 @@ def _run_worker(run_id: str, prompt: str, selections: list[tuple[dict[str, Any],
                 entry["status"] = "running"
                 current["pending_calls"] = current.get("pending_calls", 0) + 1
             try:
-                if parameters.get("stream") and messages is not None:
+                on_delta = None
+                if parameters.get("stream"):
                     on_delta = lambda fragment, rid=run_id, mid=model["id"], params=parameters: _append_run_stream(rid, mid, fragment, params)
-                    future = pool.submit(core.call_model, connection, model, prompt, parameters, on_delta, messages)
-                elif messages is not None:
-                    future = pool.submit(core.call_model, connection, model, prompt, parameters, messages=messages)
-                elif parameters.get("stream"):
-                    on_delta = lambda fragment, rid=run_id, mid=model["id"], params=parameters: _append_run_stream(rid, mid, fragment, params)
-                    future = pool.submit(core.call_model, connection, model, prompt, parameters, on_delta)
-                elif parameters:
-                    future = pool.submit(core.call_model, connection, model, prompt, parameters)
-                else:
-                    future = pool.submit(core.call_model, connection, model, prompt)
+                on_response = lambda response, rid=run_id, mid=model["id"], event=cancel_event: _register_upstream_response(
+                    rid, mid, event, response,
+                )
+                future = pool.submit(
+                    _call_model_with_rate_limit_backoff,
+                    connection, model, prompt, parameters, cancel_event, run_kind, messages, on_delta, on_response,
+                )
             except Exception:
                 with RUN_LOCK:
                     current = RUNS.get(run_id)
@@ -540,11 +596,21 @@ def _cancel_run(run_id: str) -> bool:
             if item["status"] in ("queued", "running"):
                 item["status"] = "cancelled"
                 item.pop("result", None)
-        return True
+    with _UPSTREAM_LOCK:
+        responses = [response for (active_run_id, _model_id), response in list(_UPSTREAM_RESPONSES.items())
+                     if active_run_id == run_id]
+        for key in [key for key in _UPSTREAM_RESPONSES if key[0] == run_id]:
+            _UPSTREAM_RESPONSES.pop(key, None)
+    for response in responses:
+        try:
+            response.close()
+        except Exception:
+            pass
+    return True
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "PolyLLMHub/0.2"
+    server_version = "PolyLLMHub/0.2.0"
 
     def log_message(self, format: str, *args: Any) -> None:
         return
@@ -555,7 +621,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         policy = (
             "default-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; "
-            "style-src 'self' 'unsafe-inline'; script-src 'sha256-" + INLINE_SCRIPT_HASH + "'"
+            "connect-src 'self' https://api.anthropic.com; style-src 'self' 'unsafe-inline'; script-src 'sha256-" + INLINE_SCRIPT_HASH + "'"
         )
         self.send_header("Content-Security-Policy", policy)
 
@@ -640,8 +706,11 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 snapshot = core.public_catalog(core.load_catalog())
                 snapshot["credential_dialogs"] = active_credential_dialogs()
-                snapshot["credential_store_supported"] = secret_store_supported()
-                snapshot["credential_store_name"] = credential_store_name()
+                store_status = credential_store_status()
+                snapshot["credential_store_supported"] = bool(store_status.get("available"))
+                snapshot["credential_store_name"] = store_status.get("name") or ""
+                snapshot["credential_store_status"] = store_status
+                snapshot["history_encryption_available"] = core.encryption_available() and bool(store_status.get("available"))
                 self.send_json(200, snapshot)
             except RuntimeError as exc:
                 self.send_json(500, {"error": str(exc)})
@@ -658,7 +727,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(500, {"error": "The catalog backup could not be created."})
             return
         if path == "/api/status":
-            self.send_json(200, {"cli_detection": installed_clis(), "cli_note": "Detected, not connected. Coding-agent CLIs are not launched."})
+            self.send_json(200, {
+                "cli_detection": installed_clis(),
+                "cli_note": "Detected, not connected. Coding-agent CLIs are not launched.",
+                "credential_store": credential_store_status(),
+            })
             return
         if path == "/api/history":
             try:
@@ -666,6 +739,8 @@ class Handler(BaseHTTPRequestHandler):
                 records, ignored_tail = core.read_history_report()
                 self.send_json(200, {
                     "enabled": catalog.get("history_enabled", False),
+                    "encrypted": catalog.get("history_encrypted", False),
+                    "encryption_available": core.encryption_available() and bool(credential_store_status().get("available")),
                     "count": len(records),
                     "ignored_incomplete_tail": ignored_tail,
                 })
@@ -752,6 +827,31 @@ class Handler(BaseHTTPRequestHandler):
                     core.save_catalog(catalog)
                 self.send_json(200, summary)
                 return
+            if path == "/api/prices/refresh":
+                table_path = ROOT / "catalog" / "pricing_table.json"
+                try:
+                    bundled = json.loads(table_path.read_text(encoding="utf-8"))
+                    rows = bundled.get("models", [])
+                    with core.CATALOG_LOCK:
+                        catalog = core.load_catalog()
+                        updated = 0
+                        skipped = 0
+                        for model in catalog.get("models", []):
+                            row = next((entry for entry in rows if entry.get("connection_id") == model.get("connection_id") and entry.get("model_id") == model.get("model_id")), None)
+                            if not row:
+                                continue
+                            current = model.get("pricing") or {}
+                            bundled_price = row.get("pricing") or {}
+                            if current and current.get("source_url") != bundled_price.get("source_url"):
+                                skipped += 1
+                                continue
+                            model["pricing"] = core.normalize_pricing(bundled_price)
+                            updated += 1
+                        core.save_catalog(catalog)
+                    self.send_json(200, {"updated": updated, "skipped_custom": skipped, "checked_on": max((row.get("pricing", {}).get("checked_on", "") for row in rows), default="")})
+                except (OSError, ValueError, TypeError, RuntimeError):
+                    self.send_json(500, {"error": "The bundled pricing table could not be loaded."})
+                return
             if path == "/api/prompt-sets":
                 catalog = core.load_catalog()
                 prompt_set = core.normalize_prompt_set(data)
@@ -771,6 +871,18 @@ class Handler(BaseHTTPRequestHandler):
                     core.save_catalog(catalog)
                 self.send_json(200, {"enabled": enabled})
                 return
+            if path == "/api/history/encryption":
+                enabled = data.get("enabled")
+                confirmed = data.get("confirmed")
+                if not isinstance(enabled, bool) or confirmed is not True:
+                    raise ValueError("Confirm the history migration before changing encryption.")
+                store_status = credential_store_status()
+                if not store_status.get("available"):
+                    self.send_json(503, {"error": str(store_status.get("message") or "The operating-system credential store is unavailable; history encryption is disabled.")})
+                    return
+                migrated = core.set_history_encryption(enabled)
+                self.send_json(200, {"encrypted": enabled, "migrated_records": migrated})
+                return
             if path == "/api/connections":
                 catalog = core.load_catalog()
                 connection = core.normalize_connection(data)
@@ -786,6 +898,9 @@ class Handler(BaseHTTPRequestHandler):
                 connection = core.connection_by_id(catalog, ident)
                 if not connection:
                     self.send_json(404, {"error": "Connection not found."})
+                    return
+                if connection.get("request_mode") == "direct":
+                    self.send_json(409, {"error": "Direct Connection keys are kept in this browser and cannot be entered through the local backend."})
                     return
                 try:
                     open_credential_dialog(ident, connection["name"])
@@ -807,6 +922,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not connection:
                     self.send_json(404, {"error": "Connection not found."})
                     return
+                if connection.get("request_mode") == "direct":
+                    self.send_json(409, {"error": "Direct Connection checks must run from this browser to preserve the direct request path."})
+                    return
                 models = _discover_and_record(ident, connection)
                 self.send_json(200, {"ok": True, "model_count": len(models)})
                 return
@@ -816,6 +934,9 @@ class Handler(BaseHTTPRequestHandler):
                 connection = core.connection_by_id(catalog, ident)
                 if not connection:
                     self.send_json(404, {"error": "Connection not found."})
+                    return
+                if connection.get("request_mode") == "direct":
+                    self.send_json(409, {"error": "Direct Connection discovery must run from this browser to preserve the direct request path."})
                     return
                 discovered = _discover_and_record(ident, connection, include_metadata=True)
                 # Discovery augments the catalog. Seeded and user-maintained entries stay intact.
@@ -932,6 +1053,8 @@ class Handler(BaseHTTPRequestHandler):
                     connection = core.connection_by_id(catalog, model["connection_id"])
                     if not connection:
                         raise ValueError("A selected model has no provider connection.")
+                    if connection.get("request_mode", "local_proxy") == "direct":
+                        raise ValueError("This connection uses Direct Connection. Its provider requests must be sent by the browser, not through the local backend.")
                     selections.append((connection, model))
                 parameters = _normalize_run_parameters(data.get("parameters", {}))
                 requested_output_limit = parameters.get("max_output_tokens")
@@ -1215,6 +1338,9 @@ def _maintenance(stop_event: threading.Event) -> None:
 
 
 def main() -> None:
+    store_status = credential_store_status(refresh=True)
+    if not store_status.get("available"):
+        print(str(store_status.get("message") or "Secure key storage is unavailable; key-saving is disabled."))
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Poly-LLM Hub is ready at http://{HOST}:{PORT}")
     print("Press Ctrl+C to stop. The server accepts local connections only.")

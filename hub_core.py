@@ -13,10 +13,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
 from provider_metadata import provider_metadata
+from history_crypto import decrypt_record, encrypt_record, encryption_available, is_envelope, migrate_file
 from secret_store import SecretStoreUnavailable, read_secret, store_name
 
 
@@ -34,6 +36,7 @@ HISTORY_PATH = DATA_ROOT / "history.jsonl"
 PROTOCOLS = {"openai_compatible", "anthropic_messages", "gemini_generate", "ollama_chat"}
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 CATALOG_EXPORT_FORMAT = "poly-llm-hub-catalog"
+DIRECT_BROWSER_CONNECTIONS = {"anthropic"}
 
 
 def _prepare_private_data_root() -> None:
@@ -75,6 +78,7 @@ def default_catalog() -> dict[str, Any]:
         "seed_catalog_initialized": False,
         "prompt_sets": [],
         "history_enabled": False,
+        "history_encrypted": False,
     }
 
 
@@ -131,9 +135,20 @@ def normalize_connection(data: dict[str, Any], existing_id: str | None = None) -
     ident = _clean_text(existing_id or data.get("id", ""), "Connection ID", 64, True)
     if not ID_RE.fullmatch(ident):
         raise ValueError("Connection ID may contain letters, numbers, dots, underscores, and hyphens.")
+    if ident == "poly-hub-history-key-v1":
+        raise ValueError("This connection ID is reserved for the local history key.")
     protocol = data.get("protocol")
     if not isinstance(protocol, str) or protocol not in PROTOCOLS:
         raise ValueError("Choose a supported API protocol.")
+    request_mode = data.get("request_mode", "local_proxy")
+    if request_mode not in ("local_proxy", "direct"):
+        raise ValueError("Choose Local Proxy or Direct Connection.")
+    if request_mode == "direct" and (
+        ident not in DIRECT_BROWSER_CONNECTIONS
+        or protocol != "anthropic_messages"
+        or validate_base_url(data.get("base_url", "")) != "https://api.anthropic.com/v1"
+    ):
+        raise ValueError("Direct Connection is available only for the built-in Anthropic Messages connection.")
     base_url = validate_base_url(data.get("base_url", ""))
     hostname = urllib.parse.urlsplit(base_url).hostname or ""
     destination = "local" if _is_loopback_host(hostname) else "remote"
@@ -144,6 +159,7 @@ def normalize_connection(data: dict[str, Any], existing_id: str | None = None) -
     return {
         "id": ident, "name": _clean_text(data.get("name", ""), "Connection name", 100, True),
         "protocol": protocol, "base_url": base_url, "auth_env": auth_env,
+        "request_mode": request_mode,
         "destination": destination, "notes": _clean_text(data.get("notes", ""), "Notes", 1000),
         "source": _clean_text(data.get("source", ""), "Source", 300),
     }
@@ -233,6 +249,35 @@ def normalize_model(data: dict[str, Any], existing_id: str | None = None) -> dic
     if not isinstance(tags, list) or len(tags) > 30:
         raise ValueError("Tags must be a list of at most 30 items.")
     clean_tags = [_clean_text(tag, "Tag", 40, True) for tag in tags]
+    benchmark_scores = data.get("benchmark_scores", [])
+    if not isinstance(benchmark_scores, list) or len(benchmark_scores) > 8:
+        raise ValueError("Benchmark scores must be a list of at most eight sourced results.")
+    clean_benchmarks = []
+    for item in benchmark_scores:
+        if not isinstance(item, dict):
+            raise ValueError("Each benchmark score must be an object.")
+        score = item.get("score")
+        if not isinstance(score, (int, float)) or isinstance(score, bool) or not _is_finite_number(score):
+            raise ValueError("Benchmark scores must be finite numbers.")
+        source_url = _clean_text(item.get("source_url", ""), "Benchmark source URL", 500, True)
+        parsed_source = urllib.parse.urlsplit(source_url)
+        if parsed_source.scheme != "https" or not parsed_source.hostname:
+            raise ValueError("Benchmark sources must be HTTPS URLs.")
+        checked_on = _clean_text(item.get("checked_on", ""), "Benchmark date", 10, True)
+        try:
+            checked_date = date.fromisoformat(checked_on)
+        except ValueError as exc:
+            raise ValueError("Benchmark date must use YYYY-MM-DD.") from exc
+        if checked_date > date.today():
+            raise ValueError("Benchmark date cannot be in the future.")
+        clean_benchmarks.append({
+            "name": _clean_text(item.get("name", ""), "Benchmark name", 80, True),
+            "score": float(score),
+            "unit": _clean_text(item.get("unit", ""), "Benchmark unit", 40, True),
+            "variant": _clean_text(item.get("variant", ""), "Benchmark variant", 160, True),
+            "source_url": source_url,
+            "checked_on": checked_on,
+        })
     return {
         "id": ident, "connection_id": _clean_text(data.get("connection_id", ""), "Connection", 64, True),
         "model_id": _clean_text(data.get("model_id", ""), "Exact model ID", 200, True),
@@ -247,6 +292,7 @@ def normalize_model(data: dict[str, Any], existing_id: str | None = None) -> dic
         "discovered_checked_on": _clean_text(data.get("discovered_checked_on", ""), "Discovery date", 10),
         "rank_score": data.get("rank_score") if isinstance(data.get("rank_score"), (int, float)) and not isinstance(data.get("rank_score"), bool) and math.isfinite(data.get("rank_score")) and data.get("rank_score") >= 0 else None,
         "rank_source": _clean_text(data.get("rank_source", ""), "Rank source", 500),
+        "benchmark_scores": clean_benchmarks,
         "pricing": normalize_pricing(data.get("pricing")),
     }
 
@@ -276,10 +322,12 @@ def load_catalog() -> dict[str, Any]:
             raise RuntimeError("The local catalog has an unsupported format.")
         catalog.setdefault("prompt_sets", [])
         catalog.setdefault("history_enabled", False)
+        catalog.setdefault("history_encrypted", False)
         catalog.setdefault("seed_catalog_initialized", bool(catalog["models"]))
         if (not isinstance(catalog["prompt_sets"], list)
                 or not isinstance(catalog["history_enabled"], bool)
-                or not isinstance(catalog["seed_catalog_initialized"], bool)):
+                or not isinstance(catalog["seed_catalog_initialized"], bool)
+                or not isinstance(catalog["history_encrypted"], bool)):
             raise RuntimeError("The local catalog has an unsupported format.")
         if not catalog["seed_catalog_initialized"] and not catalog["models"]:
             catalog["models"] = seed_models(catalog)
@@ -448,11 +496,20 @@ def public_catalog(catalog: dict[str, Any]) -> dict[str, Any]:
     return {"connections": connections, "models": models, "prompt_sets": catalog.get("prompt_sets", []), "history_enabled": catalog.get("history_enabled", False), "credential_store_name": store_name()}
 
 
-def request_json(url: str, method: str = "GET", body: dict[str, Any] | None = None, headers: dict[str, str] | None = None) -> dict[str, Any]:
+def request_json(
+    url: str, method: str = "GET", body: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None, on_response=None,
+) -> dict[str, Any]:
     data = json.dumps(body, ensure_ascii=True).encode("utf-8") if body is not None else None
     request = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
     with _same_origin_opener().open(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-        raw = response.read(2_000_001)
+        if on_response:
+            on_response(response)
+        try:
+            raw = response.read(2_000_001)
+        finally:
+            if on_response:
+                on_response(None)
     if len(raw) > 2_000_000:
         raise RuntimeError("Provider response exceeded the 2 MB limit.")
     try:
@@ -682,16 +739,23 @@ def _read_stream(response, protocol: str, on_delta, started: float) -> tuple[str
 
 def request_stream(
     url: str, body: dict[str, Any], headers: dict[str, str], protocol: str, on_delta, started: float,
+    on_response=None,
 ) -> tuple[str, dict[str, Any], int | None]:
     data = json.dumps(body, ensure_ascii=True).encode("utf-8")
     request = urllib.request.Request(url, data=data, headers=headers, method="POST")
     with _same_origin_opener().open(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-        return _read_stream(response, protocol, on_delta, started)
+        if on_response:
+            on_response(response)
+        try:
+            return _read_stream(response, protocol, on_delta, started)
+        finally:
+            if on_response:
+                on_response(None)
 
 
 def call_model(
     connection: dict[str, Any], model: dict[str, Any], prompt: str, parameters: dict[str, Any] | None = None,
-    on_delta=None, messages: list[dict[str, str]] | None = None,
+    on_delta=None, messages: list[dict[str, str]] | None = None, on_response=None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     protocol = connection["protocol"]
@@ -705,6 +769,8 @@ def call_model(
     provider_messages = messages or [{"role": "user", "content": prompt}]
     time_to_first_token_ms = None
     streamed_parts: list[str] = []
+    http_status = None
+    retry_after_seconds = None
 
     def stream_delta(fragment: str) -> None:
         nonlocal time_to_first_token_ms
@@ -738,10 +804,10 @@ def call_model(
             if protocol != "anthropic_messages" and requested_output_limit is not None:
                 effective_parameters["max_output_tokens"] = requested_output_limit
             if streaming:
-                answer, usage, measured_first_token_ms = request_stream(base + path, body, headers, protocol, stream_delta, started)
+                answer, usage, measured_first_token_ms = request_stream(base + path, body, headers, protocol, stream_delta, started, on_response)
                 time_to_first_token_ms = measured_first_token_ms
             else:
-                result = request_json(base + path, "POST", body, headers)
+                result = request_json(base + path, "POST", body, headers, on_response)
                 answer, usage = {
                     "openai_compatible": extract_openai, "anthropic_messages": extract_anthropic,
                     "ollama_chat": extract_ollama,
@@ -757,10 +823,10 @@ def call_model(
                 body["generationConfig"] = {"maxOutputTokens": requested_output_limit}
                 effective_parameters["max_output_tokens"] = requested_output_limit
             if streaming:
-                answer, usage, measured_first_token_ms = request_stream(base + path, body, headers, protocol, stream_delta, started)
+                answer, usage, measured_first_token_ms = request_stream(base + path, body, headers, protocol, stream_delta, started, on_response)
                 time_to_first_token_ms = measured_first_token_ms
             else:
-                result = request_json(base + path, "POST", body, headers)
+                result = request_json(base + path, "POST", body, headers, on_response)
                 answer, usage = extract_gemini(result)
         else:
             raise RuntimeError("This API protocol is not supported.")
@@ -770,6 +836,24 @@ def call_model(
                 "latency_ms": round((time.perf_counter() - started) * 1000),
                 "time_to_first_token_ms": time_to_first_token_ms}
     except urllib.error.HTTPError as exc:
+        http_status = exc.code
+        if exc.code == 429:
+            header = exc.headers.get("Retry-After") if exc.headers else None
+            if header:
+                try:
+                    retry_after_seconds = max(0.0, float(header.strip()))
+                except ValueError:
+                    try:
+                        retry_after_seconds = max(
+                            0.0,
+                            (parsedate_to_datetime(header).astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds(),
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        retry_after_seconds = None
+        try:
+            exc.close()
+        except Exception:
+            pass
         if exc.code == 401:
             message = "Authentication failed. Check or reconnect this provider's API key."
         elif exc.code == 429:
@@ -789,7 +873,9 @@ def call_model(
     return {"ok": False, "error": message, "parameters": effective_parameters,
             "partial_text": "".join(streamed_parts) or None,
             "time_to_first_token_ms": time_to_first_token_ms,
-            "latency_ms": round((time.perf_counter() - started) * 1000)}
+            "latency_ms": round((time.perf_counter() - started) * 1000),
+            **({"http_status": http_status} if http_status is not None else {}),
+            **({"retry_after_seconds": retry_after_seconds} if retry_after_seconds is not None else {})}
 
 
 def _url_with_query(url: str, values: dict[str, str | int]) -> str:
@@ -960,8 +1046,9 @@ def _history_cost_was_stale(cost: dict[str, Any], timestamp: Any) -> bool:
 
 def append_history(record: dict[str, Any]) -> None:
     _prepare_private_data_root()
-    line = json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n"
     with HISTORY_LOCK:
+        catalog = load_catalog()
+        encrypted = bool(catalog.get("history_encrypted"))
         if HISTORY_PATH.exists() or HISTORY_PATH.is_symlink():
             try:
                 history_stat = HISTORY_PATH.lstat()
@@ -969,6 +1056,13 @@ def append_history(record: dict[str, Any]) -> None:
                 raise RuntimeError("The local history file could not be inspected.") from exc
             if not stat.S_ISREG(history_stat.st_mode):
                 raise RuntimeError("The local history path must be a regular file.")
+            if not encrypted and history_stat.st_size:
+                try:
+                    with HISTORY_PATH.open("rb") as existing:
+                        first = existing.readline()
+                    encrypted = is_envelope(json.loads(first.decode("utf-8")))
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                    pass
             if history_stat.st_size:
                 with HISTORY_PATH.open("rb") as existing:
                     existing.seek(-1, os.SEEK_END)
@@ -988,6 +1082,8 @@ def append_history(record: dict[str, Any]) -> None:
                             existing.write(b"\n")
                             existing.flush()
                             os.fsync(existing.fileno())
+        stored_record = encrypt_record(record, create_key=True) if encrypted else record
+        line = json.dumps(stored_record, ensure_ascii=True, separators=(",", ":")) + "\n"
         flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(HISTORY_PATH, flags, 0o600)
         with os.fdopen(descriptor, "a", encoding="utf-8", newline="\n") as handle:
@@ -1021,6 +1117,8 @@ def read_history_report() -> tuple[list[dict[str, Any]], bool]:
     rating_events: dict[str, dict[str, Any]] = {}
     preference_events: dict[str, dict[str, Any]] = {}
     ignored_incomplete_tail = False
+    catalog = load_catalog()
+    encryption_required = bool(catalog.get("history_encrypted"))
     with HISTORY_LOCK:
         if HISTORY_PATH.is_symlink():
             raise RuntimeError("The local history path must not be a symbolic link.")
@@ -1053,6 +1151,10 @@ def read_history_report() -> tuple[list[dict[str, Any]], bool]:
                             ignored_incomplete_tail = True
                             break
                         raise
+                    if isinstance(value, dict) and is_envelope(value):
+                        value = decrypt_record(value)
+                    elif encryption_required:
+                        raise RuntimeError("History encryption is enabled but an unencrypted record was found.")
                     if isinstance(value, dict):
                         if value.get("record_type") == "rating":
                             target_id = value.get("target_record_id")
@@ -1094,6 +1196,26 @@ def clear_history() -> None:
         if HISTORY_PATH.exists():
             HISTORY_PATH.unlink()
             _sync_data_directory()
+
+
+def set_history_encryption(enabled: bool) -> int:
+    """Migrate the existing JSONL atomically, then persist the encryption setting."""
+    if not isinstance(enabled, bool):
+        raise ValueError("History encryption must be enabled or disabled.")
+    with HISTORY_LOCK:
+        catalog = load_catalog()
+        if bool(catalog.get("history_encrypted")) == enabled:
+            return 0
+        if enabled and not encryption_available():
+            raise RuntimeError(
+                "History encryption needs the optional cryptography package. Install requirements-history-encryption.txt and restart the app."
+            )
+        _prepare_private_data_root()
+        migrated = migrate_file(HISTORY_PATH, enabled)
+        catalog["history_encrypted"] = enabled
+        save_catalog(catalog)
+        _sync_data_directory()
+        return migrated
 
 
 def summarize_history(records: list[dict[str, Any]]) -> list[dict[str, Any]]:

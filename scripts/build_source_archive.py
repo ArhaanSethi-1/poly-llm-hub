@@ -18,14 +18,19 @@ ARCHIVE_FILES = (
     "app.py",
     "credential_dialog.py",
     "hub_core.py",
+    "history_crypto.py",
     "provider_metadata.py",
     "pyproject.toml",
     "roadmap.md",
     "secret_store.py",
+    "requirements-build.txt",
+    "requirements-history-encryption.txt",
     "start.ps1",
     "web/index.html",
     "tests/test_hub.py",
+    "tests/live_smoke_test.py",
     "scripts/build_source_archive.py",
+    "scripts/build_standalone.py",
     "scripts/check_inline_js.py",
     "docs/ADDING_PROVIDER.md",
     "docs/ARCHITECTURE.md",
@@ -34,6 +39,7 @@ ARCHIVE_FILES = (
     "docs/SECURITY_REVIEW.md",
     "catalog/README.md",
     "catalog/seed_models.json",
+    "catalog/pricing_table.json",
 )
 _BACKSLASH = re.escape(b"\\")
 _SLASH = re.escape(b"/")

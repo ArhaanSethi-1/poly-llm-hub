@@ -20,6 +20,7 @@ MAX_CREDENTIAL_BYTES = 512
 CONNECTION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 MACOS_KEYCHAIN_SERVICE = "com.poly-llm-hub.connection"
 MACOS_SECURITY_PATH = "/usr/bin/security"
+HISTORY_KEY_ID = "poly-hub-history-key-v1"
 
 
 class SecretStoreUnavailable(RuntimeError):
@@ -63,6 +64,40 @@ def store_name() -> str:
     if sys.platform == "darwin" and os.path.isfile(MACOS_SECURITY_PATH):
         return "macOS Keychain"
     return ""
+
+
+def availability() -> dict[str, str | bool]:
+    """Check whether the platform vault is usable without exposing any secret value."""
+    name = store_name()
+    if not name:
+        if sys.platform.startswith("linux"):
+            return {
+                "available": False,
+                "name": "",
+                "message": "Linux key saving is disabled because secret-tool was not found. Install the libsecret-tools package plus a Secret Service keyring such as GNOME Keyring or KWallet, then run Poly-LLM Hub from an unlocked desktop session. No plaintext fallback is used.",
+            }
+        return {"available": False, "name": "", "message": "No supported operating-system credential store was detected."}
+    if sys.platform.startswith("linux"):
+        if not os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
+            return {
+                "available": False,
+                "name": name,
+                "message": "Linux key saving is disabled: no desktop Secret Service session is available. Install the libsecret-tools package and a Secret Service keyring such as GNOME Keyring or KWallet, then run Poly-LLM Hub from an unlocked desktop session. No plaintext fallback is used.",
+            }
+        try:
+            result = subprocess.run(
+                [shutil.which("secret-tool") or "secret-tool", "lookup", "service", "poly-llm-hub", "connection", _target(HISTORY_KEY_ID)],
+                text=True, encoding="utf-8", capture_output=True, timeout=3, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            result = None
+        if result is None or result.returncode not in (0, 1) or result.stderr.strip():
+            return {
+                "available": False,
+                "name": name,
+                "message": "Linux key saving is disabled because Secret Service did not respond. Install/unlock a desktop keyring and ensure secret-tool is available; no plaintext fallback is used.",
+            }
+    return {"available": True, "name": name, "message": ""}
 
 
 def _windows_api():

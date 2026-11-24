@@ -42,7 +42,7 @@ The catalog is stored at %APPDATA%\Poly-LLM-Hub\catalog.json on Windows (or the 
 **Status: Partial**
 
 - Users can enter or replace a provider key in a native masked dialog that writes to Windows Credential Manager, Linux Secret Service through `secret-tool`, or the macOS login Keychain through Apple's `security` tool.
-- The browser sends a connection ID to open the dialog; provider key values are not placed in browser storage, catalog files, exports, source files, command-line arguments, or app logs.
+- The browser sends a connection ID to open the Local Proxy key dialog; proxy key values are not placed in browser storage, catalog files, exports, source files, command-line arguments, or app logs. Direct Anthropic mode is documented separately and stores its user-provided key in browser localStorage.
 - Environment-variable credentials remain available as a fallback. A saved OS-vault key takes priority.
 - Users can remove a saved key locally and check connectivity through a model-list request that sends no prompt.
 - Built-in provider cards include official key and documentation links. Provider account access and billing remain separate.
@@ -61,15 +61,15 @@ Implemented:
 - The same prompt is sent to each selected model using its configured protocol adapter.
 - Up to three comparisons may be active, with up to three provider calls per comparison running at once.
 - Results show the provider connection, exact model ID, local/remote destination, status, duration, token usage when returned, and safe error text. Streaming text appears as it arrives for supported protocols; time-to-first-token is retained when measured.
-- A shared optional maximum output-token setting is mapped to each adapter and recorded with results.
+- A shared optional maximum output-token setting is mapped to each adapter and recorded with results. Compare retries only 429 rate limits automatically with bounded backoff; other failures still require explicit retry.
 - A preferred response can be set, changed, or cleared without triggering another model request. Choices are stored in opt-in history as append-only events.
 - The Cancel control immediately stops local result collection and marks queued/in-flight cards cancelled.
-- Failed model calls can be retried by explicit user action up to twice per retry chain. Only one retry per failed result may run at a time. Retries require the original model and endpoint identity to remain unchanged and obey the current history setting.
+- Failed model calls can be retried by explicit user action up to twice per retry chain. Compare and prompt-set runs also retry only HTTP 429 throttles with bounded exponential backoff; other failures remain explicit. Only one user retry per failed result may run at a time.
 
 Limitations and remaining work:
 
 - Provider APIs are stateless, so the chosen context is sent again on each turn. Lean and balanced windows reduce token use by omitting older messages; users can choose full context when needed. Automatic model failover and provider-specific context-window estimation are not implemented.
-- The standard-library HTTP transport cannot reliably abort an upstream request after it has been sent. A cancelled provider may continue generation and billing. The concurrency cap remains occupied while calls that cannot be interrupted are still running.
+- Cancel closes the tracked HTTP response and prevents late results from being accepted. This is a best-effort transport disconnect; provider-side stop and billing behavior are not guaranteed by the APIs used here. The concurrency cap remains occupied while calls are still unwinding.
 - Streaming is implemented for the four supported text-generation protocols. A shared temperature control is deferred because supported ranges and behavior vary by provider and model; a value may be rejected or silently ignored. Other provider-specific generation parameters, manual settings for per-call concurrency, and automated synthesis are not implemented.
 - No model response is treated as HTML.
 
@@ -82,7 +82,8 @@ Implemented:
 - Users can create, edit, and remove prompt sets with categorized prompt items. Seven original starter examples are available in the UI.
 - A user can run the saved prompts sequentially against the selected models. The server uses the saved prompt text as the source of truth for each benchmark request.
 - A separate local-history switch is off by default. When enabled, each completed model result is stored locally with the prompt, response, exact model/connection/protocol, timestamp, latency, token counts, status, and cost metadata where available.
-- Users can export history to JSONL or CSV and clear it. Exports use an allow-list of credential-free fields. Clearing history also disables future history writes.
+- Optional AES-GCM at-rest encryption uses a random key in the existing OS credential store. The UI confirms before migrating existing JSONL records; backend reads and exports remain decrypted and human-readable.
+- Users can export history to JSONL or CSV and clear it. Exports use an allow-list of credential-free fields and decrypt history when enabled. Clearing history also disables future history writes.
 - CSV text beginning with common spreadsheet formula characters is prefixed before export to reduce formula-injection risk.
 - When local history is enabled, users can rate each successful response from 1 to 5. Rating changes are appended as separate events and merged into exports and summaries.
 - Saved-history summaries group runs by catalog model and report success, preferred-answer selections with recorded-choice sample counts, average latency, average time-to-first-token, token totals, user ratings with sample counts, and available cost estimates.
@@ -147,8 +148,8 @@ Implemented:
 Still needed:
 
 - Broader security review and browser end-to-end tests.
-- Reliable cancellation of already-submitted upstream requests.
-- No automatic retry is performed; explicit retries create separately recorded attempts and may still incur provider charges.
+- Provider-side cancellation endpoints and billing effects are not implemented or guaranteed. The local server closes tracked responses, which asks the transport to disconnect.
+- Only HTTP 429 retries are automatic for Compare/prompt-set runs. Other failures require user action; every retry is a provider request and may incur charges.
 
 ## Phase 8 — Tests
 
@@ -156,16 +157,16 @@ Still needed:
 
 - A Python unittest suite uses temporary loopback mock HTTP servers and patched transport errors. It does not use real API keys or contact live provider services.
 - Chat coverage verifies multi-turn role mapping across the four protocol adapters and enforces one-model chat requests with bounded user/assistant context.
-- It verifies the four response adapters/parsers, discovery pagination and Anthropic metadata mapping, JSON and streaming response bounds, manual model entry, endpoint validation, missing credentials, authentication/rate-limit/timeout/invalid-JSON handling, cost estimates, Origin checks, connection/model/prompt-set CRUD, credential non-disclosure in API responses and exports, selection limits, preferred-answer behavior, cancellation, opt-in history, benchmark prompt source, JSONL/CSV export, CSV formula-injection handling, run-memory pruning, bounded per-run parallelism, mocked Windows/Linux/macOS credential-store round trips, and Anthropic output limits.
-- Current suite: 43 tests. All passed on Windows with Python 3.10 on 2026-11-24. Mocked vault adapters do not establish platform credential-vault behavior; mock provider tests do not establish live provider compatibility.
+- It verifies the four response adapters/parsers, discovery pagination and Anthropic metadata mapping, JSON/streaming bounds, manual model entry, endpoint validation, missing credentials, 429-only retry behavior, cost estimates, Origin checks, connection/model/prompt-set CRUD, pricing refresh, Direct-mode backend rejection and Local Proxy fallback, credential non-disclosure, cancellation response closing, history exports, CSV formula-injection handling, run-memory pruning, bounded parallelism, mocked OS vaults, and archive safety. Three history-encryption tests run when the optional `cryptography` dependency is installed; all 53 tests passed in the current Windows run.
+- Current suite count and latest run result are recorded in `docs/PROJECT_LOG.md`. Mocked vault adapters do not establish platform credential-vault behavior; mock provider tests do not establish live provider compatibility. The separate live smoke script requires `--confirm-costs` and is excluded from unittest discovery and CI.
 - `.github/workflows/checks.yml` configures the mock suite, Python compilation, browser-script syntax/runtime checks, and source-archive build on Ubuntu and Windows with Python 3.10 and 3.12. A hosted workflow result has not yet been observed.
 
 ## Phase 9 — Desktop and cross-platform packaging
 
-**Status: Planned**
+**Status: Partial**
 
-- The current interface is a browser UI served by a local Python process; it is not a native desktop shell or installer.
-- Decide whether a desktop shell is needed after the local workflow is reviewed. Keep provider APIs, local inference servers, and agent CLIs behind separate adapters if the UI is replaced.
+- Added a PyInstaller one-file build script for native Windows or macOS builds. It bundles the browser UI and catalog alongside the existing Python app entry point.
+- The build must be performed and reviewed separately on each target OS. Code signing, notarization, auto-update, native desktop shell, and installer packaging remain planned.
 - Linux Secret Service uses `secret-tool`; macOS Keychain uses Apple's `security` tool with key material sent through stdin rather than process arguments.
 - Package a Windows installer only after the source and Windows Credential Manager flow are reviewed; signing and update behavior need their own release plan.
 

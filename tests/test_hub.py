@@ -25,6 +25,7 @@ if str(ROOT_DIR) not in sys.path:
 
 import app
 import hub_core as core
+import history_crypto
 import secret_store as store
 from scripts.build_source_archive import _validate_source_content, build_archive_bytes
 
@@ -147,6 +148,39 @@ class ReleaseArchiveTests(unittest.TestCase):
                 self.assertFalse(name.endswith(("catalog.json", "history.jsonl", ".pyc", ".gguf", ".log")), name)
 
 
+class HistoryCryptoTests(unittest.TestCase):
+    def test_encryption_migration_round_trip_and_plaintext_export_data(self):
+        if not history_crypto.encryption_available():
+            self.skipTest("optional cryptography package is not installed")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "history.jsonl"
+            records = [{"record_id": "a", "prompt": "private prompt", "response": "private answer"}, {"record_type": "rating", "rating": 5}]
+            path.write_text("".join(json.dumps(row) + "\n" for row in records), encoding="utf-8")
+            vault = {}
+            with mock.patch.object(history_crypto, "read_secret", side_effect=lambda ident: vault.get(ident)), \
+                    mock.patch.object(history_crypto, "save_secret", side_effect=lambda ident, value: vault.__setitem__(ident, value)):
+                self.assertEqual(history_crypto.migrate_file(path, True), 2)
+                encrypted_text = path.read_text(encoding="utf-8")
+                self.assertNotIn("private prompt", encrypted_text)
+                envelopes = [json.loads(line) for line in encrypted_text.splitlines()]
+                self.assertTrue(all(history_crypto.is_envelope(row) for row in envelopes))
+                self.assertEqual([history_crypto.decrypt_record(row) for row in envelopes], records)
+                self.assertEqual(history_crypto.migrate_file(path, False), 2)
+                self.assertEqual([json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()], records)
+
+    def test_corrupt_encrypted_history_is_not_replaced_during_migration(self):
+        if not history_crypto.encryption_available():
+            self.skipTest("optional cryptography package is not installed")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "history.jsonl"
+            original = '{"_poly_llm_history":"poly-llm-history-aesgcm-v1","nonce":"bad","ciphertext":"bad"}\n'
+            path.write_text(original, encoding="utf-8")
+            with mock.patch.object(history_crypto, "read_secret", return_value="00" * 32):
+                with self.assertRaises(RuntimeError):
+                    history_crypto.migrate_file(path, False)
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
+
+
 class LocalProviderMock(BaseHTTPRequestHandler):
     requests = []
     redirect_target = ""
@@ -234,6 +268,13 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(core.extract_anthropic({"content": [{"type": "text", "text": "B"}], "usage": {"input_tokens": 4, "output_tokens": 5}}), ("B", {"input_tokens": 4, "output_tokens": 5}))
         self.assertEqual(core.extract_gemini({"candidates": [{"content": {"parts": [{"text": "C"}]}}], "usageMetadata": {"promptTokenCount": 6, "candidatesTokenCount": 7}}), ("C", {"input_tokens": 6, "output_tokens": 7}))
         self.assertEqual(core.extract_ollama({"message": {"content": "D"}, "prompt_eval_count": 8, "eval_count": 9}), ("D", {"input_tokens": 8, "output_tokens": 9}))
+
+    def test_persian_mizan_scores_are_not_seeded_as_general_ranking(self):
+        models = core.seed_models(core.default_catalog())
+        mizan_candidates = [row for row in models if row["id"] in ("seed-ollama-gemma3", "seed-ollama-qwen3")]
+        self.assertEqual(len(mizan_candidates), 2)
+        self.assertTrue(all(row["rank_score"] is None for row in mizan_candidates))
+        self.assertTrue(all(row.get("benchmark_scores", []) == [] for row in mizan_candidates))
 
     def test_all_protocol_adapters_use_local_mock_server(self):
         cases = [
@@ -408,6 +449,47 @@ class CoreTests(unittest.TestCase):
         for url in ("http://example.com", "http://192.168.1.5:8000", "https://user:pass@example.com", "https://example.com/?key=x", "file:///tmp/x"):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 core.validate_base_url(url)
+        direct = core.normalize_connection({
+            "id": "anthropic", "name": "Anthropic", "protocol": "anthropic_messages",
+            "base_url": "https://api.anthropic.com/v1", "request_mode": "direct",
+        })
+        self.assertEqual(direct["request_mode"], "direct")
+        with self.assertRaises(ValueError):
+            core.normalize_connection({
+                "id": "openai", "name": "OpenAI", "protocol": "openai_compatible",
+                "base_url": "https://api.openai.com/v1", "request_mode": "direct",
+            })
+        with self.assertRaises(ValueError):
+            core.normalize_connection({
+                "id": "anthropic", "name": "Anthropic", "protocol": "anthropic_messages",
+                "base_url": "https://attacker.example/v1", "request_mode": "direct",
+            })
+
+    def test_rate_limit_backoff_retries_only_compare_429(self):
+        class ImmediateWait:
+            def __init__(self): self.delays = []
+            def wait(self, delay): self.delays.append(delay); return False
+        connection, model = {"id": "openai"}, {"id": "m"}
+        throttled = {"ok": False, "http_status": 429, "retry_after_seconds": 0}
+        success = {"ok": True, "text": "done"}
+        event = ImmediateWait()
+        with mock.patch.object(core, "call_model", side_effect=[throttled, success]) as call:
+            result = app._call_model_with_rate_limit_backoff(connection, model, "p", {}, event, "comparison")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["rate_limit_retries"], 1)
+        self.assertEqual(call.call_count, 2)
+        self.assertEqual(event.delays, [0.0])
+        event = ImmediateWait()
+        with mock.patch.object(core, "call_model", return_value=throttled) as call:
+            result = app._call_model_with_rate_limit_backoff(connection, model, "p", {}, event, "chat")
+        self.assertEqual(call.call_count, 1)
+        self.assertEqual(result["rate_limit_retries"], 0)
+        event = ImmediateWait()
+        with mock.patch.object(core, "call_model", return_value={"ok": False, "http_status": 503}) as call:
+            result = app._call_model_with_rate_limit_backoff(connection, model, "p", {}, event, "comparison")
+        self.assertEqual(call.call_count, 1)
+        self.assertEqual(event.delays, [])
+        self.assertEqual(result["rate_limit_retries"], 0)
 
     def test_missing_credentials_and_safe_http_errors(self):
         connection = {"protocol": "openai_compatible", "base_url": self.base, "auth_env": "POLY_HUB_TEST_KEY_UNSET"}
@@ -422,6 +504,11 @@ class CoreTests(unittest.TestCase):
                 result = core.call_model({**connection, "auth_env": ""}, model, "hello")
             self.assertIn(expected, result["error"])
             self.assertNotIn("provider error", result["error"])
+        rate_limited = HTTPError(self.base, 429, "provider error", {"Retry-After": "4"}, None)
+        with mock.patch.object(core, "request_json", side_effect=rate_limited):
+            result = core.call_model({**connection, "auth_env": ""}, model, "hello")
+        self.assertEqual(result["http_status"], 429)
+        self.assertEqual(result["retry_after_seconds"], 4)
         with mock.patch.object(core, "request_json", side_effect=TimeoutError()):
             self.assertEqual(core.call_model({**connection, "auth_env": ""}, model, "x")["error"], "Request timed out.")
         with mock.patch.object(core, "request_json", side_effect=RuntimeError("The provider returned invalid JSON.")):
@@ -542,6 +629,52 @@ class AppTests(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertEqual(data["error"], "Origin not allowed.")
 
+    def test_bundled_price_refresh_is_manual_and_direct_calls_stay_out_of_run_api(self):
+        status, data = self.request("/api/prices/refresh", "POST", {})
+        self.assertEqual(status, 200)
+        self.assertGreaterEqual(data["updated"], 1)
+        self.assertEqual(len(core.load_catalog()["models"]), 15)
+        catalog = core.load_catalog()
+        customized = catalog["models"][0]
+        customized["pricing"] = {
+            "input_per_million": 9, "output_per_million": 12,
+            "source_url": "https://custom.example/prices", "checked_on": "2026-11-24",
+        }
+        core.save_catalog(catalog)
+        status, data = self.request("/api/prices/refresh", "POST", {})
+        self.assertEqual(status, 200)
+        self.assertGreaterEqual(data["skipped_custom"], 1)
+        self.assertEqual(core.model_by_id(core.load_catalog(), customized["id"])["pricing"]["source_url"], "https://custom.example/prices")
+
+        catalog = core.load_catalog()
+        connection = core.connection_by_id(catalog, "anthropic")
+        connection["request_mode"] = "direct"
+        direct_model = core.normalize_model({
+            "id": "anthropic-direct-test", "connection_id": "anthropic", "model_id": "claude-test", "name": "Direct test",
+        })
+        catalog["models"].append(direct_model)
+        core.save_catalog(catalog)
+        status, result = self.request("/api/runs", "POST", {
+            "prompt": "hello", "model_entry_ids": [direct_model["id"]], "parameters": {"stream": False},
+        })
+        self.assertEqual(status, 400)
+        self.assertIn("Direct Connection", result["error"])
+
+    def test_cancel_closes_tracked_upstream_response(self):
+        class TrackedResponse:
+            closed = False
+            def close(self): self.closed = True
+        response = TrackedResponse()
+        event = threading.Event()
+        with app.RUN_LOCK:
+            app.RUNS["upstream-cancel"] = {
+                "id": "upstream-cancel", "status": "running", "created_at": time.time(),
+                "models": [{"model_entry_id": "m", "status": "running"}], "cancel_event": event,
+            }
+        app._register_upstream_response("upstream-cancel", "m", event, response)
+        self.assertTrue(app._cancel_run("upstream-cancel"))
+        self.assertTrue(response.closed)
+
     def test_seed_catalog_does_not_return_after_user_clears_it(self):
         catalog = core.load_catalog()
         self.assertEqual(len(catalog["models"]), 15)
@@ -637,7 +770,7 @@ class AppTests(unittest.TestCase):
     def test_comparison_preference_adds_no_provider_call(self):
         self.seed_model()
         calls = []
-        def fake_call(connection, model, prompt):
+        def fake_call(connection, model, prompt, parameters=None, on_delta=None, messages=None, on_response=None):
             calls.append((model["id"], prompt))
             return {"ok": True, "text": "mock response", "usage": {"input_tokens": 1, "output_tokens": 2}, "latency_ms": 3}
         with mock.patch.object(core, "call_model", side_effect=fake_call):
@@ -660,7 +793,7 @@ class AppTests(unittest.TestCase):
     def test_active_comparison_limit_accounts_for_pending_runs(self):
         self.seed_model()
         release = threading.Event()
-        def blocked_call(connection, model, prompt):
+        def blocked_call(connection, model, prompt, parameters=None, on_delta=None, messages=None, on_response=None):
             release.wait(5)
             return {"ok": True, "text": "complete", "usage": {}, "latency_ms": 1}
         run_ids = []
@@ -704,7 +837,7 @@ class AppTests(unittest.TestCase):
         peak = 0
         call_count = 0
 
-        def concurrent_call(connection, model, prompt):
+        def concurrent_call(connection, model, prompt, parameters=None, on_delta=None, messages=None, on_response=None):
             nonlocal active, peak, call_count
             with lock:
                 active += 1
@@ -743,7 +876,7 @@ class AppTests(unittest.TestCase):
     def test_cancel_during_slow_mock_keeps_cancelled_status(self):
         self.seed_model()
         started, release = threading.Event(), threading.Event()
-        def slow_call(connection, model, prompt):
+        def slow_call(connection, model, prompt, parameters=None, on_delta=None, messages=None, on_response=None):
             started.set()
             release.wait(2)
             return {"ok": True, "text": "late answer", "usage": {}, "latency_ms": 1}
@@ -774,7 +907,7 @@ class AppTests(unittest.TestCase):
         release = threading.Event()
         calls_started = 0
 
-        def streaming_call(connection, model, prompt, parameters=None, on_delta=None):
+        def streaming_call(connection, model, prompt, parameters=None, on_delta=None, messages=None, on_response=None):
             nonlocal calls_started
             on_delta("partial-" + model["id"])
             with lock:
@@ -849,7 +982,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.request("/api/prompt-sets", "POST", payload)
         calls = []
-        def fake_call(connection, model, prompt):
+        def fake_call(connection, model, prompt, parameters=None, on_delta=None, messages=None, on_response=None):
             calls.append(prompt)
             return {"ok": True, "text": "bonjour", "usage": {"input_tokens": 3, "output_tokens": 1}, "latency_ms": 2}
         with mock.patch.object(core, "call_model", side_effect=fake_call):
@@ -876,7 +1009,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(data["count"], 0)
         status, _ = self.request("/api/history/settings", "POST", {"enabled": True})
         self.assertEqual(status, 200)
-        def fake_call(connection, model, prompt):
+        def fake_call(connection, model, prompt, parameters=None, on_delta=None, messages=None, on_response=None):
             return {"ok": True, "text": "stored mock response", "usage": {"input_tokens": 2, "output_tokens": 3}, "latency_ms": 4}
         with mock.patch.object(core, "call_model", side_effect=fake_call):
             status, data = self.request("/api/runs", "POST", {"prompt": "explicitly opt-in prompt", "model_entry_ids": ["m-test"]})
@@ -909,6 +1042,40 @@ class AppTests(unittest.TestCase):
         self.assertFalse(core.HISTORY_PATH.exists())
         _, after_clear = self.request("/api/history")
         self.assertFalse(after_clear["enabled"])
+
+    def test_encrypted_history_is_stored_ciphertext_and_exports_readable_rows(self):
+        if not history_crypto.encryption_available():
+            self.skipTest("optional cryptography package is not installed")
+        catalog = core.load_catalog()
+        catalog["history_enabled"] = True
+        core.save_catalog(catalog)
+        core.append_history({"record_type": "run", "record_id": "encrypted-export", "prompt_text": "hidden in file", "models": []})
+        vault = {}
+        with mock.patch.object(history_crypto, "read_secret", side_effect=lambda ident: vault.get(ident)), \
+                mock.patch.object(history_crypto, "save_secret", side_effect=lambda ident, value: vault.__setitem__(ident, value)):
+            self.assertEqual(core.set_history_encryption(True), 1)
+            raw = core.HISTORY_PATH.read_text(encoding="utf-8")
+            self.assertNotIn("hidden in file", raw)
+            response = urlopen(self.base + "/api/history/export?format=jsonl", timeout=2)
+            exported = response.read().decode("utf-8")
+            self.assertIn("hidden in file", exported)
+            exported_row = json.loads(exported)
+            self.assertEqual(exported_row["prompt_text"], "hidden in file")
+            self.assertNotIn("record_type", exported_row)
+
+    def test_anthropic_direct_connection_can_switch_to_local_proxy(self):
+        catalog = core.load_catalog()
+        connection = core.connection_by_id(catalog, "anthropic")
+        connection["request_mode"] = "direct"
+        core.save_catalog(catalog)
+        status, result = self.request("/api/connections/anthropic", "PUT", {
+            "id": "anthropic", "name": connection["name"], "protocol": connection["protocol"],
+            "base_url": connection["base_url"], "auth_env": connection["auth_env"],
+            "notes": connection["notes"], "request_mode": "local_proxy",
+        })
+        self.assertEqual(status, 200, result)
+        self.assertEqual(result["connection"]["request_mode"], "local_proxy")
+        self.assertEqual(core.connection_by_id(core.load_catalog(), "anthropic")["request_mode"], "local_proxy")
 
     def test_history_append_failure_keeps_response_and_shows_recovery(self):
         self.seed_model()
@@ -996,7 +1163,7 @@ class AppTests(unittest.TestCase):
         self.seed_model()
         self.request("/api/history/settings", "POST", {"enabled": True})
         started, release = threading.Event(), threading.Event()
-        def slow_call(connection, model, prompt):
+        def slow_call(connection, model, prompt, parameters=None, on_delta=None, messages=None, on_response=None):
             started.set()
             release.wait(2)
             return {"ok": True, "text": "should stay ephemeral", "usage": {}, "latency_ms": 2}
@@ -1023,7 +1190,7 @@ class AppTests(unittest.TestCase):
     def test_csv_formula_injection_sanitization(self):
         self.seed_model()
         self.request("/api/history/settings", "POST", {"enabled": True})
-        def fake_call(connection, model, prompt):
+        def fake_call(connection, model, prompt, parameters=None, on_delta=None, messages=None, on_response=None):
             return {"ok": True, "text": "=1+1 dangerous formula", "usage": {"input_tokens": 1, "output_tokens": 1}, "latency_ms": 1}
         with mock.patch.object(core, "call_model", side_effect=fake_call):
             status, data = self.request("/api/runs", "POST", {"prompt": "-cmd|' /C calc'!A0", "model_entry_ids": ["m-test"]})

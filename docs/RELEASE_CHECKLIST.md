@@ -1,6 +1,6 @@
 # Release checklist
 
-This project currently runs as a Python source checkout. It has no installer, signed binary, auto-updater, or CI release workflow. Until those exist, treat a release as a reviewed source snapshot, not a Windows `setup.exe` or native desktop application.
+This project runs from Python source and includes a PyInstaller build script for native Windows/macOS one-file executables. The Windows executable has been built and loopback-smoked; macOS remains unbuilt and unverified. It has no installer, signed binary, auto-updater, or CI release workflow. Treat a release as a reviewed source snapshot until all claimed platform builds and flows are verified.
 
 ## Before a source release
 
@@ -9,7 +9,7 @@ This project currently runs as a Python source checkout. It has no installer, si
 - Choose the release version and date; update `pyproject.toml` and release notes together.
 - Review the complete diff from the last release. Confirm that unrelated local work is not included.
 - Confirm the candidate can start from a clean checkout using the documented Windows command in the README. Record supported Python versions and any platform-specific limitations.
-- Smoke the actual entry point with an isolated empty `APPDATA` catalog: verify `GET /` and `/api/catalog` succeed, the catalog is empty, and history is off. This check must not use the user's existing catalog or contact a provider.
+- Smoke the actual entry point with an isolated empty `APPDATA` directory: verify `GET /` and `/api/catalog` succeed, the built-in seed is present on first run, and history is off. This check must not use the user's existing catalog or contact a provider.
 - Keep the repository's Apache 2.0 license and include the matching source and documentation.
 
 ### 2. Run software checks
@@ -24,9 +24,15 @@ This project currently runs as a Python source checkout. It has no installer, si
 ### 3. Review security and privacy
 
 - Confirm history is off by default and that catalog backups omit keys and run history.
+- When `cryptography` is installed, verify history encryption migration in both directions and confirm JSONL/CSV exports are readable. Confirm a missing vault disables encryption instead of storing its key elsewhere.
+- Review the Anthropic Direct Connection warning, browser-only key storage, CSP allowlist, and server-side rejection of direct-mode model runs. Do not use a real provider key during automated checks.
+- Confirm stale pricing surfaces the manual bundled-table refresh and that custom prices with a different source remain unchanged.
 - Review Host/Origin checks, loopback binding, redirect restrictions, body/output limits, and safe error handling against [SECURITY_REVIEW.md](SECURITY_REVIEW.md).
 - Review credential entry and removal on each platform being claimed: Windows Credential Manager, Linux Secret Service with an active keyring, and macOS login Keychain. Do not claim a platform flow is verified until it has been manually reviewed there.
 - Inspect the release tree for API keys, `.env` files, local catalogs/history, logs, model weights, temporary test data, and unrelated archives.
+- Run the optional live smoke script only with explicit cost approval and a low-limit key. It is never part of CI.
+- Build standalone artifacts natively on Windows and macOS. The packaging script does not cross-compile, sign, notarize, or update binaries.
+- For unsigned Windows builds, record and explain the SmartScreen/antivirus warning users may see on first launch. Do not describe an unsigned executable as signed or notarized.
 - Build the source archive with `python scripts/build_source_archive.py`. It uses a fixed file allowlist, rejects common credential signatures and machine-specific absolute paths, and excludes the project activity log and local research inventory. Inspect the archive member list and checksum before attaching it.
 - Confirm provider links, model IDs, pricing sources/dates, retention disclosures, and licensing statements are current. User prompts sent during a live check require an explicitly selected provider and credential.
 

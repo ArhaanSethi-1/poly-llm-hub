@@ -4,11 +4,34 @@ This is the durable activity record for the consolidated project. New entries be
 
 ## Current consolidated activity
 
+### 2026-11-24 — Close catalog, encryption, fallback, and Windows build gaps
+
+- Verified the imported MIZAN board is Persian MT-Bench, based on translated/rewritten Persian dialogue, and removed its values from general seed ranking. The two Ollama rows remain unranked because the data is not comparable with broad Arena preference results. The source and language/domain caveat are documented in `catalog/README.md`.
+- Installed the declared build/encryption dependencies in a local ignored virtual environment. All 53 unittest cases pass, including the three AES-GCM migration tests; Python compilation, inline JavaScript checks, and `git diff --check` pass. Updated the encrypted-export assertion to the current credential-safe JSON schema and added a Local Proxy fallback route test.
+- Anthropic Direct CORS/network failures now show organization-level browser restrictions, link Anthropic authentication guidance, and offer an explicit “Switch to Local Proxy” action. The action changes routing only when clicked and advises saving the key in the OS credential store.
+- Ran `tests/live_smoke_test.py --confirm-costs`; no matching remote connection key was readable from the OS credential store, so it sent no provider requests and incurred no smoke-test charges. Provider response parsing and live cost remain unverified.
+- Built `dist/Poly-LLM-Hub.exe` with PyInstaller 6.22.3 on Windows and launched it with isolated temporary app data. `GET /` returned HTTP 200, the title was “Poly-LLM Hub”, and `/api/catalog` returned 15 models and 6 connections. The executable is unsigned; macOS was not built or tested.
+- Identified the earlier 52-test result and MIZAN score inclusion in the preceding same-day entry as superseded by this correction pass. The old ZIP source archive was not rebuilt or overwritten.
+
+### 2026-11-24 — Close hardening gaps and verify local behavior
+
+- Added optional AES-GCM encryption/migration for JSONL history. Its random key is stored under a reserved ID in the existing OS credential vault; backend reads and JSONL/CSV exports decrypt locally. The UI confirms full-file migration and disables the control when the optional package or vault is unavailable.
+- Added a separately opt-in Anthropic Direct Connection for browser Chat and model discovery. Its browser-local key never enters Python requests; the backend rejects direct-mode provider runs, and the UI labels unsupported providers, warns about localStorage exposure and organization-level CORS restrictions, and keeps Compare on Local Proxy.
+- Added a manual bundled pricing refresh with a visible stale-data prompt; custom prices from another source remain untouched. Linux now checks actual Secret Service availability, gives installation guidance, and disables OS-key saves without plaintext fallback.
+- Compare runs now retry only HTTP 429 responses with bounded exponential backoff. Cancel closes tracked upstream HTTP responses and drops late results. README documents route-specific cancellation behavior without claiming provider billing stops.
+- Added separate source-labelled MIZAN Persian MT-Bench values for two Ollama seed models while retaining their independent/null Arena rank fields; added an opt-in cost-confirmed live smoke script and a native Windows/macOS PyInstaller build script. Neither provider smoke calls nor a native standalone build were run.
+- Verification: 52 unittest cases ran; 49 passed and 3 encryption cases skipped because `cryptography` is not installed in this environment. Python compilation, inline JavaScript checks, `git diff --check`, and deterministic archive input generation passed. The 29-file source archive input hashes to SHA-256 `2498c58a9c2bae2a3b2fffa89b93ae7bb6e2db9ed77736b59eb6150a090cc22b` (468,700 bytes); the existing ZIP was not overwritten.
+
+### 2026-11-24 — Correct test and archive inventory documentation
+
+- Corrected the roadmap's test count from 43 to 45 to match the latest recorded Windows test run. The discrepancy was caused by the roadmap retaining the count from the preceding run.
+- The source archive allowlist currently contains 29 files. An older project-log entry records the then-current 21-file allowlist; that historical count describes the initial archive before later catalog and hardening files were added. Version references remain `0.2.0`, matching `pyproject.toml`.
+
 ### 2026-11-24 — Seed ranked catalog and persistent key discovery
 
 - Added a first-run-only catalog of 15 model options spanning OpenAI, Gemini, Anthropic, xAI, DeepSeek, and Ollama. Public Arena scores are shown only where a matching published variant exists; the score source and model/pricing references are included in the catalog. Unscored models remain unscored.
 - Key save now triggers provider model discovery. Discovered models merge into the existing catalog, and matching seeded models are marked as provider-confirmed without losing seed provenance. The UI distinguishes seed, discovered, and local entries, shows provider links and lock/connect status, and lets users forget a stored key.
-- Existing OS credential-store support remains the only persistent key path. No OAuth harvesting, account scraping, key logging, or browser key storage was added. Direct Connection remains unavailable because the supported providers do not offer a reliable shared browser CORS path.
+- For that catalog/key pass, OS credential storage was the only persistent key path. No OAuth harvesting, account scraping, or key logging was added. Direct Connection was not yet available at that point; a later hardening pass added the provider-limited browser mode described in the current README.
 - Added first-run/no-reseed and discovery-merge tests. All 45 Python tests pass; compilation, inline JavaScript checks, and diff whitespace checks pass. Rebuilt `dist/Poly-LLM-Hub-0.2.0-source.zip` (405,079 bytes; SHA-256 `2cd3a7b53779f1974173e3b3a05d5e017bab05016a34081660c5ec986a9acc69`).
 - The local preview tab opened, but the UI remained at “Loading local catalog…” during the final visual check; the restricted shell could not connect to the local preview socket to inspect the API response. A preview refresh/restart should be checked separately.
 
@@ -21,7 +44,7 @@ This is the durable activity record for the consolidated project. New entries be
 
 ### 2026-11-24 — Build a privacy-checked source archive
 
-- Replaced machine-specific paths and account identifiers in consolidation/activity notes with neutral descriptions. Added `scripts/build_source_archive.py`, which packages a fixed 21-file product allowlist, rejects common credential signatures and absolute user paths, and writes a byte-reproducible ZIP with fixed metadata.
+- Replaced machine-specific paths and account identifiers in consolidation/activity notes with neutral descriptions. Added `scripts/build_source_archive.py`, which initially packaged a fixed 21-file product allowlist (later expanded to 23), rejects common credential signatures and absolute user paths, and writes a byte-reproducible ZIP with fixed metadata.
 - The archive deliberately omits Git history, the project activity log, local research inventory, local catalogs/history, caches, and build output. CI now builds the same source archive on its OS/Python matrix.
 - Added determinism/member-list and scanner-rejection tests. The complete suite passes with 41 tests; Python compilation and browser syntax/runtime checks pass.
 - Rebuilt the local review artifact after adding single-model chat at `dist/Poly-LLM-Hub-0.2.0-source.zip` (380,505 bytes; SHA-256 `afa74621db36b47ae22dd928eda23fcce185a053ea1271954a39aac35cfca0dd`). It has not been published.
