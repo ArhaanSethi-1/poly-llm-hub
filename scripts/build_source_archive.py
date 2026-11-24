@@ -32,6 +32,8 @@ ARCHIVE_FILES = (
     "docs/CONSOLIDATION.md",
     "docs/RELEASE_CHECKLIST.md",
     "docs/SECURITY_REVIEW.md",
+    "catalog/README.md",
+    "catalog/seed_models.json",
 )
 _BACKSLASH = re.escape(b"\\")
 _SLASH = re.escape(b"/")

@@ -536,10 +536,31 @@ class AppTests(unittest.TestCase):
         status, data = self.request("/api/catalog", origin=app.ALLOWED_ORIGIN)
         self.assertEqual(status, 200)
         self.assertEqual(len(data["connections"]), 6)
-        self.assertEqual(data["models"], [])
+        self.assertEqual(len(data["models"]), 15)
+        self.assertTrue(all(row["catalog_source"] == "seed" for row in data["models"]))
         status, data = self.request("/api/catalog", origin="http://evil.example")
         self.assertEqual(status, 403)
         self.assertEqual(data["error"], "Origin not allowed.")
+
+    def test_seed_catalog_does_not_return_after_user_clears_it(self):
+        catalog = core.load_catalog()
+        self.assertEqual(len(catalog["models"]), 15)
+        catalog["models"].clear()
+        core.save_catalog(catalog)
+        self.assertEqual(core.load_catalog()["models"], [])
+
+    def test_discovery_merges_models_without_replacing_seed_catalog(self):
+        self.request("/api/catalog")
+        with mock.patch.object(core, "discover_model_details", return_value=[{
+            "model_id": "provider-extra", "name": "Provider extra", "metadata_source": "test endpoint",
+        }]):
+            status, result = self.request("/api/connections/openai/discover", "POST", {})
+        self.assertEqual(status, 200, result)
+        self.assertEqual(result["added_count"], 1)
+        catalog = core.load_catalog()
+        self.assertEqual(len(catalog["models"]), 16)
+        discovered = next(row for row in catalog["models"] if row["model_id"] == "provider-extra")
+        self.assertEqual(discovered["catalog_source"], "discovered")
         status, data = self.request("/api/history/settings", "POST", {"enabled": True}, omit_origin=True)
         self.assertEqual(status, 403)
         self.assertEqual(data["error"], "Origin not allowed.")

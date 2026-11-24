@@ -1,0 +1,437 @@
+[
+  {
+    "id": "seed-gemini-25-pro",
+    "connection_id": "gemini",
+    "model_id": "gemini-3.8-flash",
+    "name": "Gemini 3.8 Flash",
+    "description": "Most capable Gemini Flash; free tier plus paid usage.",
+    "tags": [
+      "seed",
+      "free tier",
+      "low-cost"
+    ],
+    "context_limit": 1048576,
+    "output_limit": 65536,
+    "capabilities": {
+      "vision": true,
+      "tools": true,
+      "reasoning": true,
+      "streaming": true
+    },
+    "pricing": {
+      "input_per_million": 0.75,
+      "output_per_million": 3.75,
+      "source_url": "https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash",
+      "checked_on": "2026-11-24"
+    },
+    "catalog_source": "seed",
+    "rank_score": 1118.884686,
+    "rank_source": "LMArena text style-control overall; LMArena text style-control overall; Gemini 3.8 Flash (High), published 2026-11-22., published 2026-11-22. https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset",
+    "metadata_source": "https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash",
+    "metadata_checked_on": "2026-11-24"
+  },
+  {
+    "id": "seed-gemini-25-flash",
+    "connection_id": "gemini",
+    "model_id": "gemini-3.6-flash",
+    "name": "Gemini 3.6 Flash",
+    "description": "Previous-generation Flash model; free tier plus paid usage.",
+    "tags": [
+      "seed",
+      "free tier",
+      "low-cost"
+    ],
+    "context_limit": 1048576,
+    "output_limit": 65536,
+    "capabilities": {
+      "vision": true,
+      "tools": true,
+      "reasoning": true,
+      "streaming": true
+    },
+    "pricing": {
+      "input_per_million": 0.75,
+      "output_per_million": 3.75,
+      "source_url": "https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash",
+      "checked_on": "2026-11-24"
+    },
+    "catalog_source": "seed",
+    "rank_score": null,
+    "rank_source": "No compatible published quality score verified for this API model ID.",
+    "metadata_source": "https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash",
+    "metadata_checked_on": "2026-11-24"
+  },
+  {
+    "id": "seed-gemini-25-flash-lite",
+    "connection_id": "gemini",
+    "model_id": "gemini-3.5-flash-lite",
+    "name": "Gemini 3.5 Flash-Lite",
+    "description": "Cost-efficient high-volume model; free tier plus paid usage.",
+    "tags": [
+      "seed",
+      "free tier",
+      "low-cost"
+    ],
+    "context_limit": 1048576,
+    "output_limit": 65536,
+    "capabilities": {
+      "vision": true,
+      "tools": true,
+      "reasoning": true,
+      "streaming": true
+    },
+    "pricing": {
+      "input_per_million": 0.3,
+      "output_per_million": 2.5,
+      "source_url": "https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite",
+      "checked_on": "2026-11-24"
+    },
+    "catalog_source": "seed",
+    "rank_score": null,
+    "rank_source": "No compatible published quality score verified for this API model ID.",
+    "metadata_source": "https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite",
+    "metadata_checked_on": "2026-11-24"
+  },
+  {
+    "id": "seed-openai-41",
+    "connection_id": "openai",
+    "model_id": "gpt-6-luna",
+    "name": "GPT-6 Luna",
+    "description": "OpenAI cost-focused model for high-volume tasks.",
+    "tags": [
+      "seed",
+      "low-cost tier"
+    ],
+    "context_limit": 1050000,
+    "output_limit": 128000,
+    "capabilities": {
+      "vision": true,
+      "tools": true,
+      "reasoning": true,
+      "streaming": true
+    },
+    "pricing": {
+      "input_per_million": 0.1,
+      "output_per_million": 0.5,
+      "source_url": "https://developers.openai.com/api/docs/models/gpt-6-luna",
+      "checked_on": "2026-11-24"
+    },
+    "catalog_source": "seed",
+    "rank_score": 1056.124108,
+    "rank_source": "LMArena text style-control overall; GPT-6 Luna (Medium), published 2026-11-22. https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset",
+    "metadata_source": "https://developers.openai.com/api/docs/models",
+    "metadata_checked_on": "2026-11-24"
+  },
+  {
+    "id": "seed-openai-41-mini",
+    "connection_id": "openai",
+    "model_id": "gpt-6.1-terra",
+    "name": "GPT-6.1 Terra",
+    "description": "Efficient model for visual reasoning and everyday work.",
+    "tags": [
+      "seed",
+      "low-cost"
+    ],
+    "context_limit": 1050000,
+    "output_limit": 128000,
+    "capabilities": {
+      "vision": true,
+      "tools": true,
+      "reasoning": true,
+      "streaming": true
+    },
+    "pricing": {
+      "input_per_million": 1.0,
+      "output_per_million": 5.0,
+      "source_url": "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+      "checked_on": "2026-11-24"
+    },
+    "catalog_source": "seed",
+    "rank_score": 1153.115804,
+    "rank_source": "LMArena text style-control overall; GPT-6.1 Terra (Medium), published 2026-11-22. https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset",
+    "metadata_source": "https://developers.openai.com/api/docs/models",
+    "metadata_checked_on": "2026-11-24"
+  },
+  {
+    "id": "seed-openai-41-nano",
+    "connection_id": "openai",
+    "model_id": "gpt-6.2-sol",
+    "name": "GPT-6.2 Sol",
+    "description": "OpenAI everyday model; not part of the low-price tier.",
+    "tags": [
+      "seed",
+      "low-cost"
+    ],
+    "context_limit": 1050000,
+    "output_limit": 128000,
+    "capabilities": {
+      "vision": true,
+      "tools": true,
+      "reasoning": false,
+      "streaming": true
+    },
+    "pricing": {
+      "input_per_million": 2.0,
+      "output_per_million": 10.0,
+      "source_url": "https://developers.openai.com/api/docs/models/gpt-6.2-sol",
+      "checked_on": "2026-11-24"
+    },
+    "catalog_source": "seed",
+    "rank_score": 1240.655057,
+    "rank_source": "LMArena text style-control overall; GPT-6.2 Sol (Max), published 2026-11-22. https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset",
+    "metadata_source": "https://developers.openai.com/api/docs/models",
+    "metadata_checked_on": "2026-11-24"
+  },
+  {
+    "id": "seed-anthropic-haiku45",
+    "connection_id": "anthropic",
+    "model_id": "claude-haiku-5-5",
+    "name": "Claude Haiku 5.5",
+    "description": "Fast, cost-focused model. Prompts above 100k tokens use higher rates.",
+    "tags": [
+      "seed",
+      "low-cost"
+    ],
+    "context_limit": 1000000,
+    "output_limit": 128000,
+    "capabilities": {
+      "vision": true,
+      "tools": true,
+      "reasoning": true,
+      "streaming": true
+    },
+    "pricing": {
+      "input_per_million": 0.1,
+      "output_per_million": 0.5,
+      "source_url": "https://platform.claude.com/docs/en/models/haiku-5-5/overview",
+      "checked_on": "2026-11-24"
+    },
+    "catalog_source": "seed",
+    "rank_score": 1097.368719,
+    "rank_source": "LMArena text style-control overall; Claude Haiku 5.5 (High), published 2026-11-22. https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset",
+    "metadata_source": "https://platform.claude.com/docs/en/models/overview",
+    "metadata_checked_on": "2026-11-24"
+  },
+  {
+    "id": "seed-anthropic-sonnet45",
+    "connection_id": "anthropic",
+    "model_id": "claude-sonnet-5-5",
+    "name": "Claude Sonnet 5.5",
+    "description": "Balanced Claude model for general work.",
+    "tags": [
+      "seed",
+      "mid-cost"
+    ],
+    "context_limit": 1000000,
+    "output_limit": 128000,
+    "capabilities": {
+      "vision": true,
+      "tools": true,
+      "reasoning": true,
+      "streaming": true
+    },
+    "pricing": {
+      "input_per_million": 1.0,
+      "output_per_million": 5.0,
+      "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked_on": "2026-11-24"
+    },
+    "catalog_source": "seed",
+    "rank_score": 1201.758978,
+    "rank_source": "LMArena text style-control overall; Claude Sonnet 5.5 (High), published 2026-11-22. https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset",
+    "metadata_source": "https://platform.claude.com/docs/en/models/overview",
+    "metadata_checked_on": "2026-11-24"
+  },
+  {
+    "id": "seed-xai-grok3mini",
+    "connection_id": "xai",
+    "model_id": "grok-4.7",
+    "name": "Grok 4.7",
+    "description": "xAI flagship model; included as the currently documented API model.",
+    "tags": [
+      "seed",
+      "low-cost"
+    ],
+    "context_limit": 500000,
+    "output_limit": null,
+    "capabilities": {
+      "vision": false,
+      "tools": true,
+      "reasoning": true,
+      "streaming": true
+    },
+    "pricing": {
+      "input_per_million": 2.0,
+      "output_per_million": 6.0,
+      "source_url": "https://docs.x.ai/developers/models",
+      "checked_on": "2026-11-24"
+    },
+    "catalog_source": "seed",
+    "rank_score": 1112.165099,
+    "rank_source": "LMArena text style-control overall; Grok 4.7 (xHigh), published 2026-11-22. https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset",
+    "metadata_source": "https://docs.x.ai/developers/models",
+    "metadata_checked_on": "2026-11-24"
+  },
+  {
+    "id": "seed-deepseek-chat",
+    "connection_id": "deepseek",
+    "model_id": "deepseek-flash",
+    "name": "DeepSeek Flash",
+    "description": "Current cost-focused API model; prices shown at peak rate.",
+    "tags": [
+      "seed",
+      "low-cost"
+    ],
+    "context_limit": 1000000,
+    "output_limit": 384000,
+    "capabilities": {
+      "vision": false,
+      "tools": false,
+      "reasoning": false,
+      "streaming": true
+    },
+    "pricing": {
+      "input_per_million": 0.3,
+      "output_per_million": 1.2,
+      "source_url": "https://api-docs.deepseek.com/quick_start/pricing",
+      "checked_on": "2026-11-24"
+    },
+    "catalog_source": "seed",
+    "rank_score": 1107.971508,
+    "rank_source": "LMArena text style-control overall; DeepSeek-V4.1-Flash (Max), published 2026-11-22. https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset",
+    "metadata_source": "https://api-docs.deepseek.com/api/list-models/",
+    "metadata_checked_on": "2026-11-24"
+  },
+  {
+    "id": "seed-deepseek-reasoner",
+    "connection_id": "deepseek",
+    "model_id": "deepseek-v4-pro",
+    "name": "DeepSeek V4 Pro",
+    "description": "Current API model with longer context; higher than low-cost tier.",
+    "tags": [
+      "seed",
+      "low-cost",
+      "reasoning"
+    ],
+    "context_limit": 1000000,
+    "output_limit": 384000,
+    "capabilities": {
+      "vision": false,
+      "tools": false,
+      "reasoning": true,
+      "streaming": true
+    },
+    "pricing": {
+      "input_per_million": 1.32,
+      "output_per_million": 3.96,
+      "source_url": "https://api-docs.deepseek.com/quick_start/pricing",
+      "checked_on": "2026-11-24"
+    },
+    "catalog_source": "seed",
+    "rank_score": null,
+    "rank_source": "No comparable published benchmark score found for this model ID.",
+    "metadata_source": "https://api-docs.deepseek.com/api/list-models/",
+    "metadata_checked_on": "2026-11-24"
+  },
+  {
+    "id": "seed-ollama-qwen3",
+    "connection_id": "ollama",
+    "model_id": "qwen3:8b",
+    "name": "Qwen3 8B (Ollama)",
+    "description": "Downloadable local model; Ollama must be running and the model pulled locally.",
+    "tags": [
+      "seed",
+      "local",
+      "free"
+    ],
+    "context_limit": 32768,
+    "output_limit": 8192,
+    "capabilities": {
+      "vision": false,
+      "tools": true,
+      "reasoning": true,
+      "streaming": true
+    },
+    "catalog_source": "seed",
+    "rank_score": null,
+    "rank_source": "No comparable published benchmark score attached; see model card.",
+    "metadata_source": "https://ollama.com/library",
+    "metadata_checked_on": "2026-11-24"
+  },
+  {
+    "id": "seed-ollama-llama33",
+    "connection_id": "ollama",
+    "model_id": "llama3.3:70b",
+    "name": "Llama 3.3 70B (Ollama)",
+    "description": "Downloadable local model; Ollama must be running and the model pulled locally.",
+    "tags": [
+      "seed",
+      "local",
+      "free"
+    ],
+    "context_limit": 128000,
+    "output_limit": 8192,
+    "capabilities": {
+      "vision": false,
+      "tools": true,
+      "reasoning": false,
+      "streaming": true
+    },
+    "catalog_source": "seed",
+    "rank_score": null,
+    "rank_source": "No comparable published benchmark score attached; see model card.",
+    "metadata_source": "https://ollama.com/library",
+    "metadata_checked_on": "2026-11-24"
+  },
+  {
+    "id": "seed-ollama-gemma3",
+    "connection_id": "ollama",
+    "model_id": "gemma3:4b",
+    "name": "Gemma 3 4B (Ollama)",
+    "description": "Downloadable local model; Ollama must be running and the model pulled locally.",
+    "tags": [
+      "seed",
+      "local",
+      "free"
+    ],
+    "context_limit": 32768,
+    "output_limit": 8192,
+    "capabilities": {
+      "vision": true,
+      "tools": false,
+      "reasoning": false,
+      "streaming": true
+    },
+    "catalog_source": "seed",
+    "rank_score": null,
+    "rank_source": "No comparable published benchmark score attached; see model card.",
+    "metadata_source": "https://ollama.com/library",
+    "metadata_checked_on": "2026-11-24"
+  },
+  {
+    "id": "seed-ollama-deepseek-r1",
+    "connection_id": "ollama",
+    "model_id": "deepseek-r1:8b",
+    "name": "DeepSeek R1 8B (Ollama)",
+    "description": "Downloadable local reasoning model; Ollama must be running and the model pulled locally.",
+    "tags": [
+      "seed",
+      "local",
+      "free",
+      "reasoning"
+    ],
+    "context_limit": 32768,
+    "output_limit": 8192,
+    "capabilities": {
+      "vision": false,
+      "tools": false,
+      "reasoning": true,
+      "streaming": true
+    },
+    "catalog_source": "seed",
+    "rank_score": null,
+    "rank_source": "No comparable published benchmark score attached; see model card.",
+    "metadata_source": "https://ollama.com/library",
+    "metadata_checked_on": "2026-11-24"
+  }
+]

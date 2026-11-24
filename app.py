@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -818,10 +818,49 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(404, {"error": "Connection not found."})
                     return
                 discovered = _discover_and_record(ident, connection, include_metadata=True)
+                # Discovery augments the catalog. Seeded and user-maintained entries stay intact.
+                with core.CATALOG_LOCK:
+                    current = core.load_catalog()
+                    known = {(row.get("connection_id"), row.get("model_id")) for row in current["models"]}
+                    added = 0
+                    confirmed = 0
+                    checked_on = date.today().isoformat()
+                    for item in discovered:
+                        key = (ident, item["model_id"])
+                        if key in known:
+                            existing = next((row for row in current["models"] if (row.get("connection_id"), row.get("model_id")) == key), None)
+                            if existing and not existing.get("provider_discovered"):
+                                existing["provider_discovered"] = True
+                                existing["discovered_checked_on"] = checked_on
+                                confirmed += 1
+                            continue
+                        slug = re.sub(r"[^A-Za-z0-9._-]+", "-", item["model_id"]).strip("-")[:38] or "model"
+                        entry = core.normalize_model({
+                            "id": "discovered-" + slug + "-" + hashlib.sha256((ident + item["model_id"]).encode()).hexdigest()[:8],
+                            "connection_id": ident,
+                            "model_id": item["model_id"],
+                            "name": item.get("name") or item["model_id"],
+                            "description": item.get("description", ""),
+                            "context_limit": item.get("context_limit"),
+                            "output_limit": item.get("output_limit"),
+                            "capabilities": item.get("capabilities", {}),
+                            "metadata_source": item.get("metadata_source", "Provider model-list endpoint"),
+                            "metadata_checked_on": item.get("metadata_checked_on", date.today().isoformat()),
+                            "catalog_source": "discovered",
+                            "provider_discovered": True,
+                            "discovered_checked_on": checked_on,
+                        })
+                        current["models"].append(entry)
+                        known.add(key)
+                        added += 1
+                    if added or confirmed:
+                        core.save_catalog(current)
                 self.send_json(200, {
                     "models": [item["model_id"] for item in discovered],
                     "model_metadata": discovered,
                     "connection_id": ident,
+                    "added_count": added,
+                    "confirmed_count": confirmed,
                 })
                 return
             if path == "/api/models":

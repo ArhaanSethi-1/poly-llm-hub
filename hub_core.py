@@ -72,6 +72,7 @@ def default_catalog() -> dict[str, Any]:
             for ident, name, protocol, base, auth, destination in rows
         ],
         "models": [],
+        "seed_catalog_initialized": False,
         "prompt_sets": [],
         "history_enabled": False,
     }
@@ -241,6 +242,11 @@ def normalize_model(data: dict[str, Any], existing_id: str | None = None) -> dic
         "context_limit": limits["context_limit"], "output_limit": limits["output_limit"],
         "metadata_source": _clean_text(data.get("metadata_source", ""), "Metadata source", 500),
         "metadata_checked_on": _clean_text(data.get("metadata_checked_on", ""), "Metadata date", 10),
+        "catalog_source": _clean_text(data.get("catalog_source", "local"), "Catalog source", 20),
+        "provider_discovered": data.get("provider_discovered", False) if isinstance(data.get("provider_discovered", False), bool) else False,
+        "discovered_checked_on": _clean_text(data.get("discovered_checked_on", ""), "Discovery date", 10),
+        "rank_score": data.get("rank_score") if isinstance(data.get("rank_score"), (int, float)) and not isinstance(data.get("rank_score"), bool) and math.isfinite(data.get("rank_score")) and data.get("rank_score") >= 0 else None,
+        "rank_source": _clean_text(data.get("rank_source", ""), "Rank source", 500),
         "pricing": normalize_pricing(data.get("pricing")),
     }
 
@@ -250,6 +256,8 @@ def load_catalog() -> dict[str, Any]:
         _prepare_private_data_root()
         if not CATALOG_PATH.exists():
             catalog = default_catalog()
+            catalog["models"] = seed_models(catalog)
+            catalog["seed_catalog_initialized"] = True
             save_catalog(catalog)
             return catalog
         try:
@@ -268,9 +276,37 @@ def load_catalog() -> dict[str, Any]:
             raise RuntimeError("The local catalog has an unsupported format.")
         catalog.setdefault("prompt_sets", [])
         catalog.setdefault("history_enabled", False)
-        if not isinstance(catalog["prompt_sets"], list) or not isinstance(catalog["history_enabled"], bool):
+        catalog.setdefault("seed_catalog_initialized", bool(catalog["models"]))
+        if (not isinstance(catalog["prompt_sets"], list)
+                or not isinstance(catalog["history_enabled"], bool)
+                or not isinstance(catalog["seed_catalog_initialized"], bool)):
             raise RuntimeError("The local catalog has an unsupported format.")
+        if not catalog["seed_catalog_initialized"] and not catalog["models"]:
+            catalog["models"] = seed_models(catalog)
+            catalog["seed_catalog_initialized"] = True
+            save_catalog(catalog)
+        elif not catalog["seed_catalog_initialized"]:
+            catalog["seed_catalog_initialized"] = True
+            save_catalog(catalog)
         return catalog
+
+
+def seed_models(catalog: dict[str, Any]) -> list[dict[str, Any]]:
+    """Load bundled starter models only for a genuinely empty model list."""
+    if catalog.get("models"):
+        return []
+    seed_path = Path(__file__).resolve().parent / "catalog" / "seed_models.json"
+    try:
+        records = json.loads(seed_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("The bundled model catalog could not be loaded.") from exc
+    connections = {row.get("id") for row in catalog.get("connections", [])}
+    models = []
+    for record in records:
+        if record.get("connection_id") not in connections:
+            continue
+        models.append(normalize_model(record))
+    return models
 
 
 def save_catalog(catalog: dict[str, Any]) -> None:

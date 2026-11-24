@@ -4,6 +4,14 @@ This is the durable activity record for the consolidated project. New entries be
 
 ## Current consolidated activity
 
+### 2026-11-24 — Seed ranked catalog and persistent key discovery
+
+- Added a first-run-only catalog of 15 model options spanning OpenAI, Gemini, Anthropic, xAI, DeepSeek, and Ollama. Public Arena scores are shown only where a matching published variant exists; the score source and model/pricing references are included in the catalog. Unscored models remain unscored.
+- Key save now triggers provider model discovery. Discovered models merge into the existing catalog, and matching seeded models are marked as provider-confirmed without losing seed provenance. The UI distinguishes seed, discovered, and local entries, shows provider links and lock/connect status, and lets users forget a stored key.
+- Existing OS credential-store support remains the only persistent key path. No OAuth harvesting, account scraping, key logging, or browser key storage was added. Direct Connection remains unavailable because the supported providers do not offer a reliable shared browser CORS path.
+- Added first-run/no-reseed and discovery-merge tests. All 45 Python tests pass; compilation, inline JavaScript checks, and diff whitespace checks pass. Rebuilt `dist/Poly-LLM-Hub-0.2.0-source.zip` (405,079 bytes; SHA-256 `2cd3a7b53779f1974173e3b3a05d5e017bab05016a34081660c5ec986a9acc69`).
+- The local preview tab opened, but the UI remained at “Loading local catalog…” during the final visual check; the restricted shell could not connect to the local preview socket to inspect the API response. A preview refresh/restart should be checked separately.
+
 ### 2026-11-24 — Add agent-first single-model chat
 
 - Reshaped the browser UI into a local agent workspace with Chat as the primary view and the original side-by-side comparison retained as a secondary mode.
@@ -414,6 +422,16 @@ Use:
 - Added no-prompt model-list checks, tightened local Host checks, documented the provider-specific Google/API-key distinction, and added a security review note with known threat-model limits.
 - Updated README and roadmap; created the review ZIP at `dist/Poly-LLM-Hub-security-review.zip`, excluding `.git`, the older ZIP, and local data.
 - No provider credentials were entered; no live provider API requests, automated tests, or setup.exe build were performed. The next review steps are manual Windows inspection, a low-limit key smoke check if desired, then cross-platform credential stores and installer packaging.
+
+### 2026-11-24 — Seed catalog and provider model discovery
+
+- Added a 15-entry first-run seed catalog spanning OpenAI, Gemini, Anthropic, xAI, DeepSeek, and Ollama. Provider model/spec/pricing links and checked dates are attached to the seed rows.
+- Added published LMArena text style-control scores for the matched current model/configuration variants. Rows without comparable published scores are left unranked; no score is inferred from price or context length. The UI sorts available scores first and distinguishes seed, discovered, and locally added rows.
+- Catalog seeding is guarded by a persistent initialization marker. Clearing or customizing an initialized catalog no longer triggers reseeding.
+- Saving a provider key now triggers model-list discovery. New models are merged; existing seed/local rows remain intact and are marked provider-confirmed. Discovery errors are shown inline, and saved keys remain in the existing OS credential vault with an explicit Forget this key action.
+- Updated README, catalog documentation, source archive allowlist, and regression coverage. No keys were entered and no live provider endpoints were called.
+- Verification: 45 unittest cases passed; Python compileall, inline JavaScript checker, and `git diff --check` passed. The first sandboxed test attempt was blocked by loopback socket restrictions; the authorized retry passed with local test-server permission.
+- Direct browser-to-provider mode remains unimplemented; provider CORS behavior and client-side key exposure need an explicit provider-specific design before enabling it. The local proxy remains the active connection mode.
 
 ### 2026-11-24 — Restrict provider redirects to the configured origin
 

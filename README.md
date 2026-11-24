@@ -10,8 +10,9 @@ This iteration provides:
 
 - A configurable catalog that keeps provider connections separate from model entries. One connection can contain multiple models.
 - Built-in starter connections for OpenAI Chat Completions, Anthropic Messages, Gemini generateContent, xAI and DeepSeek OpenAI-compatible APIs, and local Ollama.
+- A first-run seed catalog with 15 provider and local models, source links for context and pricing, and published LMArena scores when the exact model/configuration has a comparable entry. Missing benchmark data stays unranked instead of receiving an invented score. A seed-initialized marker prevents deleted or customized catalogs from being reseeded.
 - User-defined OpenAI-compatible endpoints, including loopback services. A compatible endpoint may implement only part of the protocol; confirm its behavior and enter the exact model ID it expects.
-- Explicit model discovery follows provider pagination where supported, collects up to 500 model IDs, and imports provider-reported names, limits, descriptions, and known capability flags when available. Unknown capabilities stay unknown; manual model entry remains available when discovery is unavailable or incomplete.
+- Provider model discovery follows provider pagination where supported, collects up to 500 model IDs, and merges provider-reported models with seed and user entries. Saving a key starts discovery automatically; failures remain visible and do not remove existing entries. Unknown capabilities stay unknown; manual entry remains available.
 - Search, favorites, tags, capabilities, optional limits, and exact-model pricing metadata.
 - Side-by-side comparisons of up to five catalog entries, with up to three active comparisons and three provider calls per comparison.
 - A single-model chat workspace that carries recent user/assistant turns across supported provider protocols. It offers lean, balanced, and full-context choices; changing the active model makes no provider call, and a failed turn is resent only after explicit user action. Chat context lives in the browser session unless opt-in local history is enabled.
@@ -44,7 +45,7 @@ Requirements: Python 3.10 or later. The app uses only the Python standard librar
        python app.py
 
 3. Open http://127.0.0.1:8765 in a browser.
-4. Add model entries through discovery or by entering the exact model ID.
+4. Browse the bundled catalog immediately. Connect a provider to use its remote models; local Ollama entries need Ollama running and the model pulled locally.
 5. In Chat, choose one model and send a message. Choose Compare when you want the same prompt sent to up to five selected catalog models.
 
 Stop the server with Ctrl+C. The server binds to 127.0.0.1.
@@ -53,7 +54,7 @@ Stop the server with Ctrl+C. The server binds to 127.0.0.1.
 
 The initial catalog includes common provider connections. Edit a connection to change its base URL or optional environment-variable fallback, or add another connection using one of the supported protocols. Connections are stored separately from exact model IDs, so each connection can contain multiple models.
 
-Use **Connect key** on a connection. A native masked dialog writes the key to the current user's Windows Credential Manager, Linux Secret Service when `secret-tool` and a logged-in keyring are available, or the macOS login Keychain. On macOS, the key is sent to Apple's `security` tool over stdin in encoded form; the key itself is not placed in process arguments. The browser sends only the connection ID to the local app; the key is not submitted through JavaScript, placed in the catalog, passed in command-line arguments, or written to logs. **Get API key** and **Provider docs** links are shown for built-in providers. A saved vault key takes precedence over an environment-variable fallback.
+Use **Connect key** on a connection. A native masked dialog writes the key to the current user's Windows Credential Manager, Linux Secret Service when `secret-tool` and a logged-in keyring are available, or the macOS login Keychain. The browser sends only the connection ID to the local app; the key is not submitted through JavaScript, placed in the catalog, passed in command-line arguments, or written to logs. **Get API key** and **Provider docs** links are shown for built-in providers. A saved vault key takes precedence over an environment-variable fallback and remains available after app restarts. **Forget this key** removes only the local vault copy; revoke the key at its provider if needed.
 
 Windows PowerShell fallback examples:
 
@@ -73,7 +74,7 @@ The comparison form has an optional shared **Maximum output tokens** setting. It
 
 The connection card keeps the result and time of its latest model-list check or discovery, including a sanitized failure message, so a failed check remains visible after the page reloads.
 
-Remote connection URLs must use HTTPS. Plain HTTP is accepted only for loopback names or addresses such as localhost and 127.0.0.1. Non-loopback HTTP endpoints are rejected. The UI labels loopback destinations as local and other destinations as remote. Discovery runs only after you click Discover models and sends no prompt. When discovery is unsupported, add the provider’s exact model ID manually.
+Remote connection URLs must use HTTPS. Plain HTTP is accepted only for loopback names or addresses such as localhost and 127.0.0.1. Non-loopback HTTP endpoints are rejected. The UI labels loopback destinations as local and other destinations as remote. Key-save discovery sends only a model-list request and no prompt. When discovery is unsupported, add the provider’s exact model ID manually.
 
 Model IDs, names, tags, capability metadata, and optional prices are stored separately from provider connections. Capability values remain “unknown” unless you enter known information. Price metadata requires exact-model input and output USD rates per million tokens, an HTTPS source URL, and a checked date.
 
@@ -131,10 +132,10 @@ The dynamic connection/model catalog in `hub_core.py` is the source of truth for
 
 ## Tests
 
-The repository includes 43 Python unittest cases with temporary loopback mock servers; they do not call live providers or require real API credentials. Most recently, all 43 passed on Windows with Python 3.10 on 2026-11-24. The suite covers JSON and streaming response bounds, discovery pagination/metadata, provider adapters and multi-turn chat role mapping, local API origin checks, a hash-restricted script CSP, credential non-disclosure across catalog and export routes, bounded per-run parallelism, streamed cancellation races, history event folding/exports, run retention, mocked Windows/Linux/macOS credential-store round trips, and source-archive determinism and secret/path rejection. Mocked vault tests do not replace manual platform review. The GitHub Actions workflow is configured to run the suite, Python compilation, browser-script syntax/runtime checks, and source-archive build on Ubuntu and Windows with Python 3.10 and 3.12; a hosted workflow run is still needed before claiming CI is green. The integrated Windows credential UI and Linux/macOS vault flows still need manual platform review.
+The repository includes Python unittest cases with temporary loopback mock servers; they do not call live providers or require real API credentials. The suite covers JSON and streaming response bounds, discovery pagination/metadata, provider adapters and multi-turn chat role mapping, local API origin checks, a hash-restricted script CSP, credential non-disclosure across catalog and export routes, seed-catalog initialization and preservation, bounded per-run parallelism, streamed cancellation races, history event folding/exports, run retention, mocked Windows/Linux/macOS credential-store round trips, and source-archive determinism and secret/path rejection. Mocked vault tests do not replace manual platform review. The GitHub Actions workflow is configured to run the suite, Python compilation, browser-script syntax/runtime checks, and source-archive build on Ubuntu and Windows with Python 3.10 and 3.12; a hosted workflow run is still needed before claiming CI is green. The integrated Windows credential UI and Linux/macOS vault flows still need manual platform review.
 
     python -m unittest discover -s tests -v
 
 ## Current limits
 
-The adapters send one user message using basic protocol request shapes and support optional per-comparison output caps. Streaming is available for OpenAI-compatible, Anthropic Messages, Gemini, and Ollama chat endpoints. Temperature, other provider-specific generation parameters, images, tool use, provider-side cancellation, and all non-chat endpoints are not implemented. A provider’s model list may include IDs that the account cannot use or that do not support the chosen endpoint. Always verify access, exact IDs, model terms, and billing with the provider before relying on a live connection.
+The adapters send one user message using basic protocol request shapes and support optional per-comparison output caps. Streaming is available for OpenAI-compatible, Anthropic Messages, Gemini, and Ollama chat endpoints. Temperature, other provider-specific generation parameters, images, tool use, provider-side cancellation, direct browser calls, and all non-chat endpoints are not implemented. Direct browser calls remain off because provider CORS behavior and browser key exposure are not consistently guaranteed by provider documentation. A provider’s model list may include IDs that the account cannot use or that do not support the chosen endpoint. Always verify access, exact IDs, model terms, and billing with the provider before relying on a live connection.
