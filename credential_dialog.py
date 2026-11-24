@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 import tkinter as tk
 
-from secret_store import save_secret
+from secret_store import save_secret, store_name
 
 
 def main() -> int:
@@ -24,7 +24,7 @@ def main() -> int:
     tk.Label(frame, text=f"Connect {connection_name}", font=("Segoe UI", 14, "bold")).pack(anchor="w")
     tk.Label(
         frame,
-        text="Paste the API key for this provider connection. The key is saved directly to Windows Credential Manager and is not sent through the browser page.",
+        text=f"Paste the API key for this provider connection. The key is saved directly to {store_name()} and is not sent through the browser page.",
         justify="left",
         wraplength=440,
         pady=10,
@@ -47,7 +47,7 @@ def main() -> int:
             return
         key_var.set("")
         entry.configure(state="disabled")
-        status.configure(text="Saved in Windows Credential Manager.", fg="#166534")
+        status.configure(text=f"Saved in {store_name()}.", fg="#166534")
         save_button.configure(state="disabled")
         root.after(900, root.destroy)
 

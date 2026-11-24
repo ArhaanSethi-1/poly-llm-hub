@@ -1,12 +1,20 @@
+import base64
+import csv
+import ctypes
+import hashlib
+import io
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
 import time
 import unittest
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -17,10 +25,131 @@ if str(ROOT_DIR) not in sys.path:
 
 import app
 import hub_core as core
+import secret_store as store
+from scripts.build_source_archive import _validate_source_content, build_archive_bytes
+
+
+class SecretStoreTests(unittest.TestCase):
+    def test_windows_credential_manager_adapter_round_trip(self):
+        class FakeWindowsApi:
+            def __init__(self):
+                self.blob = b""
+                self.target = None
+                self.credential = None
+                self.buffer = None
+                self.freed = False
+
+            def CredWriteW(self, credential_pointer, _flags):
+                credential = ctypes.cast(credential_pointer, ctypes.POINTER(store._Credential)).contents
+                self.target = credential.TargetName
+                self.blob = ctypes.string_at(credential.CredentialBlob, credential.CredentialBlobSize)
+                return 1
+
+            def CredReadW(self, target, _type, _flags, output_pointer):
+                if target != self.target:
+                    return 0
+                self.credential = store._Credential()
+                self.buffer = (ctypes.c_ubyte * len(self.blob)).from_buffer_copy(self.blob)
+                self.credential.CredentialBlobSize = len(self.blob)
+                self.credential.CredentialBlob = ctypes.cast(self.buffer, ctypes.POINTER(ctypes.c_ubyte))
+                pointer = ctypes.pointer(self.credential)
+                ctypes.cast(output_pointer, ctypes.POINTER(ctypes.POINTER(store._Credential)))[0] = pointer
+                return 1
+
+            def CredDeleteW(self, target, _type, _flags):
+                return int(target == self.target)
+
+            def CredFree(self, _pointer):
+                self.freed = True
+
+        api = FakeWindowsApi()
+        connection_id, secret = "windows-connection", "win-secret-🔑"
+        with mock.patch.object(store, "sys", SimpleNamespace(platform="win32")), \
+                mock.patch.object(store, "_windows_api", return_value=api):
+            store.save_secret(connection_id, secret)
+            self.assertEqual(api.target, store._target(connection_id))
+            self.assertNotIn(connection_id, api.target)
+            self.assertEqual(store.read_secret(connection_id), secret)
+            self.assertTrue(api.freed)
+            self.assertTrue(store.delete_secret(connection_id))
+
+    def test_linux_secret_tool_keeps_key_out_of_process_arguments(self):
+        connection_id, secret = "linux-connection", "linux-secret-value"
+        calls = []
+
+        def fake_run(arguments, **options):
+            calls.append((arguments, options))
+            output = secret + "\n" if "lookup" in arguments else ""
+            return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+        with mock.patch.object(store, "sys", SimpleNamespace(platform="linux")), \
+                mock.patch.object(store.shutil, "which", return_value="/usr/bin/secret-tool"), \
+                mock.patch.object(store.subprocess, "run", side_effect=fake_run):
+            store.save_secret(connection_id, secret)
+            self.assertEqual(store.read_secret(connection_id), secret)
+            self.assertTrue(store.delete_secret(connection_id))
+
+        save_arguments, save_options = calls[0]
+        self.assertEqual(save_options["input"], secret)
+        for arguments, _options in calls:
+            self.assertNotIn(secret, arguments)
+            self.assertIn(store._target(connection_id), arguments)
+
+    def test_macos_keychain_sends_secret_via_interactive_stdin(self):
+        connection_id, secret = "mac-connection", "mac-secret-value"
+        calls = []
+
+        def fake_run(arguments, **options):
+            calls.append((arguments, options))
+            output = secret + "\n" if "find-generic-password" in arguments else ""
+            return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+        with mock.patch.object(store, "sys", SimpleNamespace(platform="darwin")), \
+                mock.patch.object(store.os.path, "isfile", return_value=True), \
+                mock.patch.object(store.subprocess, "run", side_effect=fake_run):
+            store.save_secret(connection_id, secret)
+            self.assertEqual(store.read_secret(connection_id), secret)
+            self.assertTrue(store.delete_secret(connection_id))
+
+        save_arguments, save_options = calls[0]
+        self.assertEqual(save_arguments, [store.MACOS_SECURITY_PATH, "-i"])
+        self.assertNotIn(secret, save_options["input"])
+        self.assertIn(secret.encode("utf-8").hex(), save_options["input"])
+        for arguments, options in calls:
+            self.assertNotIn(secret, arguments)
+            target = options["input"] if "-i" in arguments else " ".join(arguments)
+            self.assertIn(store._target(connection_id), target)
+
+
+class ReleaseArchiveTests(unittest.TestCase):
+    def test_source_scanner_rejects_machine_paths_and_credential_signatures(self):
+        separator = chr(92).encode("ascii")
+        absolute_path = b"C:" + separator + b"Users" + separator + b"tester" + separator + b"catalog.json"
+        with self.assertRaisesRegex(ValueError, "Machine-specific absolute path"):
+            _validate_source_content("README.md", absolute_path)
+
+        credential = b"sk-" + b"A" * 28
+        with self.assertRaisesRegex(ValueError, "Credential-like material"):
+            _validate_source_content("README.md", credential)
+
+    def test_source_archive_is_deterministic_and_excludes_local_artifacts(self):
+        first = build_archive_bytes(ROOT_DIR)
+        second = build_archive_bytes(ROOT_DIR)
+        self.assertEqual(first, second)
+        with zipfile.ZipFile(io.BytesIO(first)) as archive:
+            names = archive.namelist()
+            self.assertIn("Poly-LLM-Hub-0.2.0/README.md", names)
+            self.assertIn("Poly-LLM-Hub-0.2.0/app.py", names)
+            self.assertIn("Poly-LLM-Hub-0.2.0/docs/SECURITY_REVIEW.md", names)
+            self.assertFalse(any("PROJECT_LOG" in name or "local-client-inventory" in name for name in names))
+            self.assertFalse(any(name.startswith(".git/") or "/.git/" in name for name in names))
+            for name in names:
+                self.assertFalse(name.endswith(("catalog.json", "history.jsonl", ".pyc", ".gguf", ".log")), name)
 
 
 class LocalProviderMock(BaseHTTPRequestHandler):
     requests = []
+    redirect_target = ""
 
     def log_message(self, fmt, *args):
         return
@@ -34,7 +163,15 @@ class LocalProviderMock(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path == "/models":
+        if self.path == "/same-origin-redirect":
+            self.send_response(302)
+            self.send_header("Location", "/models")
+            self.end_headers()
+        elif self.path == "/cross-origin-redirect":
+            self.send_response(302)
+            self.send_header("Location", type(self).redirect_target)
+            self.end_headers()
+        elif self.path == "/models":
             self._send(200, {"data": [{"id": "mock-model"}]})
         elif self.path == "/api/tags":
             self._send(200, {"models": [{"name": "mock-local:latest"}]})
@@ -59,6 +196,22 @@ class LocalProviderMock(BaseHTTPRequestHandler):
                              "prompt_eval_count": 12, "eval_count": 4})
         else:
             self._send(404, {"error": "not found"})
+
+
+class RedirectTargetMock(BaseHTTPRequestHandler):
+    requests = 0
+
+    def log_message(self, fmt, *args):
+        return
+
+    def do_GET(self):
+        type(self).requests += 1
+        body = json.dumps({"data": [{"id": "should-not-be-reached"}]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
 
 class CoreTests(unittest.TestCase):
@@ -99,6 +252,36 @@ class CoreTests(unittest.TestCase):
                 self.assertEqual(result["text"], "mock answer")
                 self.assertEqual(result["usage"]["input_tokens"], 12)
 
+    def test_chat_context_maps_assistant_roles_for_all_protocols(self):
+        messages = [
+            {"role": "user", "content": "Keep the reply short."},
+            {"role": "assistant", "content": "Understood."},
+            {"role": "user", "content": "What did I ask you to do?"},
+        ]
+        cases = [
+            ("openai_compatible", "/v1", "mock-model"),
+            ("anthropic_messages", "/v1", "mock-model"),
+            ("gemini_generate", "/v1beta", "mock-model"),
+            ("ollama_chat", "", "mock-local:latest"),
+        ]
+        for protocol, prefix, model_id in cases:
+            with self.subTest(protocol=protocol):
+                LocalProviderMock.requests.clear()
+                connection = {"id": "mock", "name": "Local mock", "protocol": protocol,
+                              "base_url": self.base + prefix, "auth_env": "", "destination": "local"}
+                model = {"id": "m", "model_id": model_id, "name": model_id, "pricing": None}
+                result = core.call_model(connection, model, messages[-1]["content"], messages=messages)
+                self.assertTrue(result["ok"], result)
+                body = LocalProviderMock.requests[-1][1]
+                if protocol == "gemini_generate":
+                    self.assertEqual(body["contents"], [
+                        {"role": "user", "parts": [{"text": "Keep the reply short."}]},
+                        {"role": "model", "parts": [{"text": "Understood."}]},
+                        {"role": "user", "parts": [{"text": "What did I ask you to do?"}]},
+                    ])
+                else:
+                    self.assertEqual(body["messages"], messages)
+
     def test_discovery_and_unavailable_discovery(self):
         connection = {"id": "mock", "protocol": "openai_compatible", "base_url": self.base, "auth_env": ""}
         self.assertEqual(core.discover_models(connection), ["mock-model"])
@@ -107,6 +290,106 @@ class CoreTests(unittest.TestCase):
         with mock.patch.object(core, "request_json", side_effect=URLError("offline")):
             with self.assertRaises(URLError):
                 core.discover_models(connection)
+
+    def test_paginated_discovery_uses_provider_cursors(self):
+        cases = [
+            ({"id": "openai", "protocol": "openai_compatible", "base_url": "https://example.test", "auth_env": ""},
+             [{"data": [{"id": "first"}], "has_more": True, "last_id": "first"},
+              {"data": [{"id": "second"}], "has_more": False}], "after=first"),
+            ({"id": "gemini", "protocol": "gemini_generate", "base_url": "https://example.test", "auth_env": ""},
+             [{"models": [{"name": "models/first"}], "nextPageToken": "next-token"},
+              {"models": [{"name": "models/second"}]}], "pageToken=next-token"),
+        ]
+        for connection, pages, expected_cursor in cases:
+            with self.subTest(protocol=connection["protocol"]), mock.patch.object(core, "request_json", side_effect=pages) as request:
+                self.assertEqual(core.discover_models(connection), ["first", "second"])
+                self.assertIn(expected_cursor, request.call_args_list[1].args[0])
+
+    def test_anthropic_discovery_paginates_and_maps_documented_metadata(self):
+        connection = {
+            "id": "anthropic", "protocol": "anthropic_messages",
+            "base_url": "https://api.anthropic.example/v1", "auth_env": "",
+        }
+        pages = [
+            {
+                "data": [{
+                    "id": "claude-sonnet-example",
+                    "display_name": "Claude Sonnet Example",
+                    "max_input_tokens": 200_000,
+                    "max_tokens": 8_192,
+                    "capabilities": {
+                        "image_input": {"supported": True},
+                        "thinking": {"supported": True},
+                    },
+                }],
+                "has_more": True,
+                "last_id": "claude-sonnet-example",
+            },
+            {"data": [{"id": "claude-haiku-example", "display_name": "Claude Haiku Example"}], "has_more": False},
+        ]
+        with mock.patch.object(core, "request_json", side_effect=pages) as request:
+            details = core.discover_model_details(connection)
+
+        self.assertEqual([item["model_id"] for item in details], ["claude-haiku-example", "claude-sonnet-example"])
+        sonnet = next(item for item in details if item["model_id"] == "claude-sonnet-example")
+        self.assertEqual(sonnet["name"], "Claude Sonnet Example")
+        self.assertEqual(sonnet["context_limit"], 200_000)
+        self.assertEqual(sonnet["output_limit"], 8_192)
+        self.assertTrue(sonnet["capabilities"]["vision"])
+        self.assertTrue(sonnet["capabilities"]["reasoning"])
+        self.assertEqual(sonnet["metadata_source"], "Anthropic Models API")
+        self.assertRegex(sonnet["metadata_checked_on"], r"^\d{4}-\d{2}-\d{2}$")
+        self.assertEqual(request.call_count, 2)
+        self.assertIn("after_id=claude-sonnet-example", request.call_args_list[1].args[0])
+
+    def test_json_provider_response_size_is_bounded(self):
+        oversized = io.BytesIO(b"x" * (core.MAX_RESPONSE_BYTES + 1))
+        with mock.patch.object(core, "_same_origin_opener") as opener:
+            opener.return_value.open.return_value = oversized
+            with self.assertRaisesRegex(RuntimeError, "2 MB limit"):
+                core.request_json("https://provider.example.test/models")
+
+    def test_sse_stream_byte_and_line_limits(self):
+        oversized_line = io.BytesIO(b"data: " + b"x" * 65_537 + b"\n")
+        with self.assertRaisesRegex(RuntimeError, "stream exceeded the response size limit"):
+            list(core._sse_payloads(oversized_line))
+
+        oversized_body = io.BytesIO((b"x" * 60_000 + b"\n") * 34)
+        with self.assertRaisesRegex(RuntimeError, "stream exceeded the response size limit"):
+            list(core._sse_payloads(oversized_body))
+
+    def test_streamed_output_limit_stops_before_emitting_overflow(self):
+        payload = json.dumps({"choices": [{"delta": {"content": "x" * (core.MAX_RESPONSE_BYTES + 1)}}]})
+        emitted = []
+        with mock.patch.object(core, "_sse_payloads", return_value=iter([payload])):
+            with self.assertRaisesRegex(RuntimeError, "Provider response exceeded the 2 MB limit"):
+                core._read_stream(io.BytesIO(), "openai_compatible", emitted.append, time.perf_counter())
+        self.assertEqual(emitted, [])
+
+    def test_ollama_stream_line_limit(self):
+        oversized_line = io.BytesIO(b'{"message":{"content":"' + b"x" * 65_520 + b'"}}\n')
+        with self.assertRaisesRegex(RuntimeError, "stream exceeded the response size limit"):
+            core._read_stream(oversized_line, "ollama_chat", None, time.perf_counter())
+
+    def test_provider_redirect_must_stay_on_same_origin(self):
+        same_origin = core.request_json(self.base + "/same-origin-redirect")
+        self.assertEqual(same_origin["data"][0]["id"], "mock-model")
+
+        RedirectTargetMock.requests = 0
+        target_server = ThreadingHTTPServer(("127.0.0.1", 0), RedirectTargetMock)
+        target_thread = threading.Thread(target=target_server.serve_forever, daemon=True)
+        target_thread.start()
+        LocalProviderMock.redirect_target = "http://127.0.0.1:" + str(target_server.server_port) + "/models"
+        try:
+            with self.assertRaises(HTTPError) as raised:
+                core.request_json(self.base + "/cross-origin-redirect", headers={"Authorization": "Bearer test"})
+            self.assertEqual(raised.exception.code, 302)
+            self.assertEqual(RedirectTargetMock.requests, 0)
+        finally:
+            LocalProviderMock.redirect_target = ""
+            target_server.shutdown()
+            target_server.server_close()
+            target_thread.join(timeout=2)
 
     def test_manual_model_normalization_and_invalid_discovery_shape(self):
         model = core.normalize_model({"id": "m1", "connection_id": "c1", "model_id": "vendor/exact-id", "name": "Friendly"})
@@ -188,13 +471,15 @@ class AppTests(unittest.TestCase):
             app.RUNS.clear()
         self.temp.cleanup()
 
-    def request(self, path, method="GET", body=None, origin=None):
+    def request(self, path, method="GET", body=None, origin=None, omit_origin=False):
         data = json.dumps(body).encode() if body is not None else None
         headers = {}
         if data is not None:
             headers["Content-Type"] = "application/json"
         if origin is not None:
             headers["Origin"] = origin
+        elif method in {"POST", "PUT", "DELETE"} and not omit_origin:
+            headers["Origin"] = app.ALLOWED_ORIGIN
         request = Request(self.base + path, data=data, headers=headers, method=method)
         try:
             response = urlopen(request, timeout=2)
@@ -209,6 +494,44 @@ class AppTests(unittest.TestCase):
         }))
         core.save_catalog(catalog)
 
+    def test_html_csp_allows_only_the_hashed_inline_script(self):
+        response = urlopen(self.base + "/", timeout=2)
+        self.assertEqual(response.status, 200)
+        html = response.read().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        scripts = re.findall(rb"<script\b[^>]*>(.*?)</script\s*>", html, flags=re.IGNORECASE | re.DOTALL)
+        self.assertEqual(len(scripts), 1)
+        script_hash = base64.b64encode(hashlib.sha256(scripts[0]).digest()).decode("ascii")
+        self.assertEqual(script_hash, app.INLINE_SCRIPT_HASH)
+        policy = response.headers.get("Content-Security-Policy", "")
+        self.assertIn("script-src 'sha256-" + script_hash + "'", policy)
+        self.assertNotIn("script-src 'unsafe-inline'", policy)
+        self.assertIn("object-src 'none'", policy)
+        self.assertIn("base-uri 'none'", policy)
+        self.assertIn("form-action 'self'", policy)
+        self.assertIn("frame-ancestors 'none'", policy)
+
+    def test_catalog_and_downloads_expose_credential_status_without_key(self):
+        catalog = core.default_catalog()
+        core.save_catalog(catalog)
+        sentinel = "NEVER-RETURN-THIS-TEST-KEY"
+        with mock.patch.object(core, "read_secret", return_value=sentinel), \
+                mock.patch.object(core, "store_name", return_value="Mock credential vault"), \
+                mock.patch.dict(os.environ, {"OPENAI_API_KEY": sentinel}):
+            status, data = self.request("/api/catalog")
+            self.assertEqual(status, 200)
+            openai = next(row for row in data["connections"] if row["id"] == "openai")
+            self.assertTrue(openai["credential_set"])
+            self.assertTrue(openai["credential_saved"])
+            self.assertEqual(openai["credential_source"], "Mock credential vault")
+            self.assertNotIn(sentinel, json.dumps(data))
+
+            catalog_response = urlopen(self.base + "/api/catalog/export", timeout=2)
+            self.assertNotIn(sentinel, catalog_response.read().decode("utf-8"))
+            history_jsonl = urlopen(self.base + "/api/history/export?format=jsonl", timeout=2)
+            self.assertNotIn(sentinel, history_jsonl.read().decode("utf-8"))
+            history_csv = urlopen(self.base + "/api/history/export?format=csv", timeout=2)
+            self.assertNotIn(sentinel, history_csv.read().decode("utf-8"))
+
     def test_origin_checks_and_catalog_initialization(self):
         status, data = self.request("/api/catalog", origin=app.ALLOWED_ORIGIN)
         self.assertEqual(status, 200)
@@ -217,6 +540,51 @@ class AppTests(unittest.TestCase):
         status, data = self.request("/api/catalog", origin="http://evil.example")
         self.assertEqual(status, 403)
         self.assertEqual(data["error"], "Origin not allowed.")
+        status, data = self.request("/api/history/settings", "POST", {"enabled": True}, omit_origin=True)
+        self.assertEqual(status, 403)
+        self.assertEqual(data["error"], "Origin not allowed.")
+
+    def test_chat_turn_uses_one_model_and_passes_only_bounded_messages(self):
+        self.seed_model()
+        messages = [
+            {"role": "user", "content": "Remember this detail."},
+            {"role": "assistant", "content": "I will."},
+            {"role": "user", "content": "Continue from here."},
+        ]
+        result = {"ok": True, "text": "Continuing.", "usage": {}, "parameters": {"stream": False},
+                  "latency_ms": 2, "time_to_first_token_ms": None}
+        with mock.patch.object(core, "call_model", return_value=result) as call_model:
+            status, data = self.request("/api/runs", "POST", {
+                "chat": True, "prompt": messages[-1]["content"], "messages": messages,
+                "model_entry_ids": ["m-test"], "parameters": {"stream": False},
+            })
+            self.assertEqual(status, 202, data)
+            deadline = time.time() + 2
+            run = None
+            while time.time() < deadline:
+                status, run = self.request("/api/runs/" + data["run_id"])
+                if run["status"] in ("completed", "failed", "cancelled"):
+                    break
+                time.sleep(0.01)
+            self.assertEqual(run["status"], "completed")
+            self.assertEqual(run["run_kind"], "chat")
+            self.assertEqual(run["models"][0]["status"], "complete")
+            call_model.assert_called_once()
+            self.assertEqual(call_model.call_args.kwargs["messages"], messages)
+
+        status, data = self.request("/api/runs", "POST", {
+            "chat": True, "prompt": "Continue from here.", "messages": messages,
+            "model_entry_ids": ["m-test", "another-model"], "parameters": {"stream": False},
+        })
+        self.assertEqual(status, 400)
+        self.assertIn("exactly one model", data["error"])
+
+        status, data = self.request("/api/runs", "POST", {
+            "chat": True, "prompt": "A prompt", "messages": [{"role": "system", "content": "not allowed"}],
+            "model_entry_ids": ["m-test"], "parameters": {"stream": False},
+        })
+        self.assertEqual(status, 400)
+        self.assertIn("user or assistant", data["error"])
 
     def test_connection_model_crud_and_durable_nonsecret_catalog(self):
         status, _ = self.request("/api/connections", "POST", {
@@ -268,6 +636,89 @@ class AppTests(unittest.TestCase):
             self.assertEqual(preferred["preferred_model_entry_id"], "m-test")
             self.assertEqual(len(calls), 1)
 
+    def test_active_comparison_limit_accounts_for_pending_runs(self):
+        self.seed_model()
+        release = threading.Event()
+        def blocked_call(connection, model, prompt):
+            release.wait(5)
+            return {"ok": True, "text": "complete", "usage": {}, "latency_ms": 1}
+        run_ids = []
+        with mock.patch.object(core, "call_model", side_effect=blocked_call):
+            try:
+                for _ in range(app.MAX_ACTIVE_RUNS):
+                    status, data = self.request("/api/runs", "POST", {"prompt": "hello", "model_entry_ids": ["m-test"]})
+                    self.assertEqual(status, 202)
+                    run_ids.append(data["run_id"])
+                status, data = self.request("/api/runs", "POST", {"prompt": "too many", "model_entry_ids": ["m-test"]})
+                self.assertEqual(status, 400)
+                self.assertIn("maximum number of comparisons", data["error"])
+            finally:
+                release.set()
+            deadline = time.time() + 3
+            for run_id in run_ids:
+                while time.time() < deadline:
+                    _, run = self.request("/api/runs/" + run_id)
+                    if run["status"] == "completed":
+                        break
+                    time.sleep(.03)
+                self.assertEqual(run["status"], "completed")
+
+    def test_per_run_model_parallelism_is_capped(self):
+        self.seed_model()
+        catalog = core.load_catalog()
+        model_ids = ["m-test"]
+        for index in range(2, app.MAX_MODELS_PER_RUN + 1):
+            model_id = "m-test-" + str(index)
+            catalog["models"].append(core.normalize_model({
+                "id": model_id, "connection_id": "openai", "model_id": "mock-model-" + str(index),
+                "name": "Mock model " + str(index),
+            }))
+            model_ids.append(model_id)
+        core.save_catalog(catalog)
+
+        lock = threading.Lock()
+        release = threading.Event()
+        three_started = threading.Event()
+        active = 0
+        peak = 0
+        call_count = 0
+
+        def concurrent_call(connection, model, prompt):
+            nonlocal active, peak, call_count
+            with lock:
+                active += 1
+                call_count += 1
+                peak = max(peak, active)
+                if active == app.MAX_PARALLEL_MODELS:
+                    three_started.set()
+            try:
+                release.wait(3)
+                return {"ok": True, "text": model["model_id"], "usage": {}, "latency_ms": 1}
+            finally:
+                with lock:
+                    active -= 1
+
+        with mock.patch.object(core, "call_model", side_effect=concurrent_call):
+            status, data = self.request("/api/runs", "POST", {"prompt": "hello", "model_entry_ids": model_ids})
+            self.assertEqual(status, 202)
+            run_id = data["run_id"]
+            try:
+                self.assertTrue(three_started.wait(2), "the run did not start the expected parallel calls")
+                with lock:
+                    self.assertEqual(active, app.MAX_PARALLEL_MODELS)
+                    self.assertEqual(peak, app.MAX_PARALLEL_MODELS)
+            finally:
+                release.set()
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                _, run = self.request("/api/runs/" + run_id)
+                if run["status"] == "completed":
+                    break
+                time.sleep(.03)
+            self.assertEqual(run["status"], "completed")
+            self.assertEqual(call_count, len(model_ids))
+            self.assertEqual(peak, app.MAX_PARALLEL_MODELS)
+
     def test_cancel_during_slow_mock_keeps_cancelled_status(self):
         self.seed_model()
         started, release = threading.Event(), threading.Event()
@@ -288,6 +739,65 @@ class AppTests(unittest.TestCase):
             status, run = self.request("/api/runs/" + run_id)
             self.assertEqual(run["status"], "cancelled")
             self.assertNotIn("result", run["models"][0])
+
+    def test_stream_callbacks_and_late_results_are_ignored_after_cancel(self):
+        self.seed_model()
+        catalog = core.load_catalog()
+        catalog["models"].append(core.normalize_model({
+            "id": "m-test-2", "connection_id": "openai", "model_id": "mock-model-2", "name": "Mock model 2",
+        }))
+        core.save_catalog(catalog)
+
+        lock = threading.Lock()
+        started = threading.Event()
+        release = threading.Event()
+        calls_started = 0
+
+        def streaming_call(connection, model, prompt, parameters=None, on_delta=None):
+            nonlocal calls_started
+            on_delta("partial-" + model["id"])
+            with lock:
+                calls_started += 1
+                if calls_started == 2:
+                    started.set()
+            release.wait(5)
+            on_delta("late-" + model["id"])
+            return {"ok": True, "text": "late result", "usage": {}, "latency_ms": 1}
+
+        with mock.patch.object(core, "call_model", side_effect=streaming_call):
+            status, data = self.request("/api/runs", "POST", {
+                "prompt": "hello", "model_entry_ids": ["m-test", "m-test-2"],
+                "parameters": {"stream": True},
+            })
+            self.assertEqual(status, 202)
+            run_id = data["run_id"]
+            self.assertTrue(started.wait(2), "both streaming calls did not start")
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                _, running = self.request("/api/runs/" + run_id)
+                if all("partial-" in (model.get("result", {}).get("text") or "") for model in running["models"]):
+                    break
+                time.sleep(.02)
+            self.assertTrue(all("partial-" in (model.get("result", {}).get("text") or "") for model in running["models"]))
+            try:
+                status, cancelled = self.request("/api/runs/" + run_id, "DELETE")
+                self.assertEqual(status, 200)
+                self.assertEqual(cancelled["status"], "cancelled")
+                self.assertTrue(all(model["status"] == "cancelled" for model in cancelled["models"]))
+                self.assertTrue(all("result" not in model for model in cancelled["models"]))
+            finally:
+                release.set()
+
+            deadline = time.time() + 3
+            while time.time() < deadline:
+                _, settled = self.request("/api/runs/" + run_id)
+                if settled["pending_calls"] == 0:
+                    break
+                time.sleep(.02)
+            self.assertEqual(settled["status"], "cancelled")
+            self.assertEqual(settled["pending_calls"], 0)
+            self.assertTrue(all(model["status"] == "cancelled" for model in settled["models"]))
+            self.assertTrue(all("result" not in model for model in settled["models"]))
 
     def test_prework_cancellation_and_localstorage_privacy(self):
         event = threading.Event()
@@ -379,6 +889,74 @@ class AppTests(unittest.TestCase):
         _, after_clear = self.request("/api/history")
         self.assertFalse(after_clear["enabled"])
 
+    def test_history_append_failure_keeps_response_and_shows_recovery(self):
+        self.seed_model()
+        self.request("/api/history/settings", "POST", {"enabled": True})
+        response = {"ok": True, "text": "still available", "usage": {}, "latency_ms": 1}
+        incomplete = "Local history ends with an incomplete record. Export the readable history, then clear history before saving more runs."
+        with mock.patch.object(core, "call_model", return_value=response), \
+                mock.patch.object(core, "append_history", side_effect=RuntimeError(incomplete)):
+            status, data = self.request("/api/runs", "POST", {"prompt": "keep this result", "model_entry_ids": ["m-test"]})
+            self.assertEqual(status, 202)
+            deadline = time.time() + 3
+            while time.time() < deadline:
+                _, run = self.request("/api/runs/" + data["run_id"])
+                if run["status"] == "completed":
+                    break
+                time.sleep(.03)
+        result = run["models"][0]["result"]
+        self.assertEqual(result["text"], "still available")
+        self.assertFalse(result["history_saved"])
+        self.assertEqual(result["history_save_error"], incomplete)
+
+    def test_history_rating_and_preference_events_fold_to_latest_state(self):
+        records = [
+            {"record_id": "record-a", "run_id": "run-pref", "connection_id": "mock", "connection_name": "Mock",
+             "model_entry_id": "model-a", "model_id": "a", "model_name": "A", "finish_status": "success", "latency_ms": 10},
+            {"record_id": "record-b", "run_id": "run-pref", "connection_id": "mock", "connection_name": "Mock",
+             "model_entry_id": "model-b", "model_id": "b", "model_name": "B", "finish_status": "success", "latency_ms": 20},
+        ]
+        for record in records:
+            core.append_history(record)
+        core.append_history({"record_type": "rating", "event_id": "rating-1", "target_record_id": "record-a", "rating": 3, "timestamp": "one"})
+        core.append_history({"record_type": "rating", "event_id": "rating-2", "target_record_id": "record-a", "rating": 5, "timestamp": "two"})
+        core.append_history({"record_type": "preference", "event_id": "pref-1", "target_run_id": "run-pref", "preferred_model_entry_id": "model-a", "timestamp": "one"})
+        core.append_history({"record_type": "preference", "event_id": "pref-2", "target_run_id": "run-pref", "preferred_model_entry_id": "model-b", "timestamp": "two"})
+
+        folded = core.read_history()
+        self.assertEqual(folded[0]["user_rating"], 5)
+        self.assertTrue(folded[0]["has_preference"])
+        self.assertFalse(folded[0]["is_preferred"])
+        self.assertTrue(folded[1]["is_preferred"])
+        summary = core.summarize_history(folded)
+        model_a = next(row for row in summary if row["model_entry_id"] == "model-a")
+        self.assertEqual(model_a["average_user_rating"], 5)
+
+        jsonl_response = urlopen(self.base + "/api/history/export?format=jsonl", timeout=2)
+        exported_jsonl = [json.loads(line) for line in jsonl_response.read().decode("utf-8").splitlines()]
+        self.assertEqual(exported_jsonl[0]["user_rating"], 5)
+        self.assertFalse(exported_jsonl[0]["is_preferred"])
+        self.assertTrue(exported_jsonl[1]["is_preferred"])
+        csv_response = urlopen(self.base + "/api/history/export?format=csv", timeout=2)
+        exported_csv = list(csv.DictReader(io.StringIO(csv_response.read().decode("utf-8"))))
+        self.assertEqual(exported_csv[0]["user_rating"], "5")
+        self.assertEqual(exported_csv[0]["is_preferred"], "False")
+        self.assertEqual(exported_csv[1]["is_preferred"], "True")
+
+        core.append_history({"record_type": "rating", "event_id": "rating-3", "target_record_id": "record-a", "rating": None, "timestamp": "three"})
+        core.append_history({"record_type": "preference", "event_id": "pref-3", "target_run_id": "run-pref", "preferred_model_entry_id": None, "timestamp": "three"})
+        cleared = core.read_history()
+        self.assertIsNone(cleared[0]["user_rating"])
+        self.assertFalse(cleared[0]["has_preference"])
+        self.assertFalse(cleared[0]["is_preferred"])
+        self.assertFalse(cleared[1]["has_preference"])
+        self.assertEqual(sum(row["preference_samples"] for row in core.summarize_history(cleared)), 0)
+        response = urlopen(self.base + "/api/history/export?format=jsonl", timeout=2)
+        cleared_export = [json.loads(line) for line in response.read().decode("utf-8").splitlines()]
+        self.assertIsNone(cleared_export[0]["user_rating"])
+        self.assertFalse(cleared_export[0]["has_preference"])
+
+
     def test_history_stays_off_unless_explicitly_enabled(self):
         self.seed_model()
         with mock.patch.object(core, "call_model", return_value={"ok": True, "text": "ephemeral", "usage": {}, "latency_ms": 1}):
@@ -450,8 +1028,34 @@ class AppTests(unittest.TestCase):
                     "created_at": time.time() - (120 - i),
                     "models": [],
                 }
+            app.RUNS["old-active-run"] = {
+                "id": "old-active-run", "status": "running", "created_at": time.time() - 3600,
+                "pending_calls": 1, "models": [],
+            }
             app._prune_runs()
             self.assertLessEqual(len(app.RUNS), 70)
+            self.assertIn("old-active-run", app.RUNS)
+
+    def test_settled_runs_expire_after_ttl_but_active_runs_remain(self):
+        now = time.time()
+        with app.RUN_LOCK:
+            app.RUNS.clear()
+            app.RUNS["expired-run"] = {
+                "id": "expired-run", "status": "completed", "created_at": now - app.RUN_TTL_SECONDS - 1,
+                "pending_calls": 0, "models": [],
+            }
+            app.RUNS["fresh-run"] = {
+                "id": "fresh-run", "status": "completed", "created_at": now,
+                "pending_calls": 0, "models": [],
+            }
+            app.RUNS["pending-run"] = {
+                "id": "pending-run", "status": "cancelled", "created_at": now - app.RUN_TTL_SECONDS - 1,
+                "pending_calls": 1, "models": [],
+            }
+            app._prune_runs()
+            self.assertNotIn("expired-run", app.RUNS)
+            self.assertIn("fresh-run", app.RUNS)
+            self.assertIn("pending-run", app.RUNS)
 
 
 if __name__ == "__main__":

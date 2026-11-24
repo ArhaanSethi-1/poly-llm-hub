@@ -7,7 +7,7 @@ This folder is the single reviewable Poly-LLM Hub source tree created for the us
 - The newer `poly-llm-hub-ready` implementation supplied the dynamic connection/model catalog, provider protocol adapters, prompt sets, comparison runs, cancellation, response usage and cost estimates, opt-in local history, exports, and the existing mock-server test suite.
 - The earlier `AI UI` workspace supplied the durable project log, security review, provider onboarding notes, and research records.
 - The Gemini scratch review supplied the Windows Credential Manager flow, native key-entry window, connection-check interaction, clipboard action, stricter request content type, local Host validation, and shutdown cleanup. These were adapted to the dynamic connection catalog here.
-- The newer Gemini complete folder at `C:\Users\arhaa\.gemini\antigravity\brain\477ddf6f-553a-4f95-a28a-2462d650271c\scratch\poly-llm-hub-complete\Poly-LLM-Hub-complete` has the same project file set and adds run-memory pruning, a worker/run synchronization fix, CSV formula-injection protection, a configurable Anthropic output limit, and matching regression cases. Those improvements are incorporated here.
+- A later Gemini review copy had the same project file set and added run-memory pruning, a worker/run synchronization fix, CSV formula-injection protection, a configurable Anthropic output limit, and matching regression cases. Those improvements are incorporated here.
 - The earlier product vision and CLI/fusion/policy/desktop-release goals are carried into the README and roadmap. Its initial React Native/Express code snippets were conceptual sketches and are superseded by the current Python architecture.
 
 ## Architecture decisions
@@ -25,12 +25,9 @@ This folder is the single reviewable Poly-LLM Hub source tree created for the us
 - Runtime user data, credentials, generated archives, caches, and prior ZIP files. No API key was copied.
 - The older single-purpose static-provider app. Its useful onboarding and security behavior was integrated into the dynamic architecture instead of replacing it.
 
-## Source and destination paths
+## Source and destination notes
 
-- Consolidated folder: `C:\Users\arhaa\Documents\ChatGPT\AI UI\poly-llm-hub-complete`
-- Canonical GitHub Desktop checkout targeted for the reviewed copy: `C:\Users\arhaa\Documents\GitHub\poly-llm-hub-ready`
-- Gemini scratch source, left untouched: `C:\Users\arhaa\.gemini\antigravity\brain\477ddf6f-553a-4f95-a28a-2462d650271c\scratch\poly-llm-hub\Poly-LLM-Hub-review`
-- Newer Gemini complete source, left untouched: `C:\Users\arhaa\.gemini\antigravity\brain\477ddf6f-553a-4f95-a28a-2462d650271c\scratch\poly-llm-hub-complete\Poly-LLM-Hub-complete`
-- Earlier AI UI workspace source files and user artifacts were left in place; this consolidated child folder and its review ZIP were added: `C:\Users\arhaa\Documents\ChatGPT\AI UI`
+- The consolidated source tree was copied into the canonical repository checkout while preserving its `.git` directory.
+- The earlier workspace and Gemini review copies were left untouched; runtime data, credentials, generated archives, caches, and prior ZIPs were excluded.
 
-The source folders are preserved. The GitHub checkout's `.git` directory and remote history are kept in place; the reviewed files from this consolidated tree are overlaid onto that checkout for the requested push.
+The source folders are preserved. The repository's `.git` directory and remote history remain in place; reviewed project files were overlaid onto the checkout for review.
